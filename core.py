@@ -120,7 +120,10 @@ JUNK = re.compile(r'\.(png|jpe?g|gif|webp|svg|css|js)$|^(u00|x22|%)|example\.|se
                   r'webmaster@|dmca@|legal@|security@|gdpr@', re.I)
 PAGES = ['', '/about', '/about-us', '/team', '/contact', '/company']
 ROLE = set('info hello contact support team admin sales hi help office enquiries inquiries marketing partnerships press '
-           'media business founders founder general mail billing careers jobs'.split())
+           'media business founders founder general mail billing careers jobs hey yo feedback service care customer '
+           'customerservice orders shop store partners partner growth sponsor ads advertising investors dev developers '
+           'api app studio design community news newsletter social pr ops operations accounts hr legal booking '
+           'bookings request requests apps product products contacto kontakt bonjour hola ai dpo official destek hallo halo main data'.split())
 
 
 def crawl(website, max_pages=6):
@@ -285,6 +288,10 @@ def retag():
         emails.append(r['email']); fits.append('{' + ','.join(p) + '}'); whys.append(why)
     DB.execute("""update leads l set fit_products = v.f::text[], fit_reason = v.w
                   from unnest(%s::text[], %s::text[], %s::text[]) as v(e, f, w) where l.email = v.e""", (emails, fits, whys))
+    # founder = a personal mailbox, company = a shared inbox (hello@, support@...); the two get different campaigns
+    DB.execute("""update leads set contact_type = case when reoon_status = 'role_account'
+                    or split_part(split_part(email, '@', 1), '+', 1) = any(%s) then 'company' else 'founder' end
+                  where contact_type is null""", (sorted(ROLE),))
     return len(rows)
 
 
