@@ -66,7 +66,11 @@ def plan(catch_all=False):
 def variables(r):
     import datetime
     sg = r['signals'] or {}
-    v = {'source': r['_src'], 'sourceLine': SOURCE_LINE[r['_src']], 'audience': r['contact_type'],
+    company = r['company_name'] or r['company']
+    first = (r['first_name'] or '').strip()
+    first = first if first.lower() not in ('', 'there', 'hi', 'hello', 'team', 'admin', 'info') else None
+    greeting = (first or 'there') if r['contact_type'] != 'company' else f'{company} team'   # "Hi {{greeting}},"
+    v = {'greeting': greeting, 'maker': first, 'source': r['_src'], 'sourceLine': SOURCE_LINE[r['_src']], 'audience': r['contact_type'],
          'launchMonth': datetime.date.fromisoformat(sg['ph_day']).strftime('%B') if sg.get('ph_day') else None,
          'upvotes': sg.get('upvotes'), 'tagline': sg.get('tagline'), 'mrr': sg.get('mrr'), 'ycBatch': sg.get('yc_batch'),
          'domainRating': r['domain_rating'], 'xHandle': r['x_handle'], 'title': r['title']}
