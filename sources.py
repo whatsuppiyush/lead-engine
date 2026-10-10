@@ -271,10 +271,23 @@ def _date(s):
     except Exception: return None
 
 
+def _paced_get(url, tries=6):
+    """Shopify answers 429 when hit fast: back off and retry instead of losing the page."""
+    for n in range(tries):
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html'}), timeout=25)
+            return r.read(1_500_000).decode('utf-8', 'ignore')
+        except urllib.error.HTTPError as e:
+            if e.code != 429: return ''
+            time.sleep(min(60, int(e.headers.get('Retry-After') or 0) or 5 * 2 ** n))
+        except Exception:
+            time.sleep(3)
+    return ''
+
+
 def _shopify_listing(url):
     import re
-    from core import http_get
-    _, p = http_get(url, timeout=20, limit=1_500_000)
+    p = _paced_get(url)
     if not p: return None
     site, brand = _shopify_page_html(p)
     em = re.search(r'data-developer-support-email="([^"]+)"', p)
@@ -294,7 +307,7 @@ def shopify_sitemap(run_id, limit=500, launched_days=None):
     seen = _seen_refs('engine:shopify')
     todo = [u for u in urls if u not in seen][:limit]
     print(f'  shopify sitemap: {len(urls)} apps, {len(seen)} seen, fetching {len(todo)}')
-    with cf.ThreadPoolExecutor(8) as ex:
+    with cf.ThreadPoolExecutor(2) as ex:
         pages = [p for p in ex.map(_shopify_listing, todo) if p]
     if launched_days:
         cut = (datetime.date.today() - datetime.timedelta(days=int(launched_days))).isoformat()
