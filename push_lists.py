@@ -13,6 +13,10 @@ PRIORITY = {  # per source list: which product to pitch first
     'chrome':      ['backlinkbot', 'phlaunchkit', 'xautodm'],
     'shopify':     ['hookads', 'backlinkbot'],
 }
+STAGE = {'producthunt': 'Launched', 'launches': 'Launched', 'chrome': 'Launched', 'shopify': 'Launched',
+         'revenue': 'Revenue', 'funded': 'Funded'}   # one campaign per product x audience x stage; copy differs by stage
+SOURCE_LINE = {'producthunt': 'your Product Hunt launch', 'launches': 'your launch', 'chrome': 'your Chrome extension',
+               'shopify': 'your Shopify app', 'revenue': 'your numbers on TrustMRR', 'funded': 'the YC batch'}
 NEXT_PRODUCT_DAYS = 35
 API = 'https://api.instantly.ai/api/v2'
 
@@ -26,7 +30,7 @@ def call(path, body=None, method=None):
 
 def due(catch_all=False):
     return DB.execute("""
-      select l.email, l.first_name, l.last_name, l.company, l.website, l.email_status, l.reoon_status, l.email_origin, l.fit_products, l.x_handle,
+      select l.email, l.first_name, l.last_name, l.company, l.website, l.email_status, l.contact_type, l.reoon_status, l.email_origin, l.fit_products, l.x_handle,
              l.linkedin, l.title, c.lists, c.domain_rating, c.signals, c.name as company_name,
              (select array_agg(p.product) from instantly_pushes p where p.email = l.email) as pushed,
              (select max(p.pushed_at) from instantly_pushes p where p.email = l.email) as last_push
@@ -49,9 +53,24 @@ def plan(catch_all=False):
         if not src: continue
         prod = next((p for p in PRIORITY[src] if p in r['fit_products'] and p not in pushed), None)
         if not prod: continue
-        name = f"{LIST_NAME[src]} - {PRODUCT_NAME[prod]}" + ((' - catch-all (published)' if r['email_origin'] == 'listed' else ' - catch-all (guessed, test)') if r['reoon_status'] == 'catch_all' else '')
+        who = 'Inbox' if r['contact_type'] == 'company' else 'Founder'
+        if r['reoon_status'] == 'catch_all':
+            name = f"{PRODUCT_NAME[prod]} - Catch-all " + ('(published)' if r['email_origin'] == 'listed' else '(guessed, test)')
+        else:
+            name = f"{PRODUCT_NAME[prod]} - {who} - {STAGE[src]}"
+        r['_src'] = src
         out[(name, prod)].append(r)
     return out
+
+
+def variables(r):
+    import datetime
+    sg = r['signals'] or {}
+    v = {'source': r['_src'], 'sourceLine': SOURCE_LINE[r['_src']], 'audience': r['contact_type'],
+         'launchMonth': datetime.date.fromisoformat(sg['ph_day']).strftime('%B') if sg.get('ph_day') else None,
+         'upvotes': sg.get('upvotes'), 'tagline': sg.get('tagline'), 'mrr': sg.get('mrr'), 'ycBatch': sg.get('yc_batch'),
+         'domainRating': r['domain_rating'], 'xHandle': r['x_handle'], 'title': r['title']}
+    return {k: x for k, x in v.items() if x not in (None, '')}
 
 
 def list_id(name, cache):
@@ -77,8 +96,7 @@ if __name__ == '__main__':
         lid = list_id(name, cache)
         leads = [{'email': r['email'], 'first_name': r['first_name'], 'last_name': r['last_name'],
                   'company_name': r['company_name'] or r['company'], 'website': r['website'],
-                  'custom_variables': {k: v for k, v in {'domainRating': r['domain_rating'], 'xHandle': r['x_handle'],
-                                       'title': r['title'], 'mrr': (r['signals'] or {}).get('mrr')}.items() if v is not None}}
+                  'custom_variables': variables(r)}
                  for r in rows]
         for i in range(0, len(leads), 500):
             try:
