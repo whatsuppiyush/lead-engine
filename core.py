@@ -201,7 +201,10 @@ class Verifier:
 
     def _smtp_probe(self, dom, emails):
         """-> {email: valid|invalid|unknown}, catch_all bool|None. Control address first."""
-        mxs = self._mx(dom)
+        try:
+            mxs = self._mx(dom)
+        except Exception:                      # DNS timeout or a malformed domain: no verdict, not a rejection
+            return {e: 'unknown' for e in emails}, None
         if not mxs: return {e: 'invalid' for e in emails}, None
         control = ''.join(random.choices(string.ascii_lowercase, k=14)) + '@' + dom
         try:
