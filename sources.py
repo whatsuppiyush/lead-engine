@@ -434,7 +434,7 @@ STORES_PAGES = {}
 def hiring(run_id, limit=300, query='marketing', location='', roles=''):
     """Startups hiring on Wellfound, one row per company. Hiring for marketing/growth = they want customers now.
     ~$3 per 1,000 job rows (residential proxy inside the actor)."""
-    inp = {'query': query, 'companyOnlyMode': True, 'enrichCompany': True, 'maxResults': int(limit), 'maxPages': max(1, int(limit) // 40)}
+    inp = {'query': query, 'companyOnlyMode': True, 'enrichCompany': True, 'enrichEmails': True, 'maxResults': int(limit), 'maxPages': max(1, int(limit) // 40)}
     if location: inp['location'] = _lst(location)
     if roles: inp['roles'] = _lst(roles)
     items = apify('blackfalcondata/wellfound-scraper', inp, run_id, max_usd=max(0.30, int(limit) * 0.004))
@@ -444,7 +444,8 @@ def hiring(run_id, limit=300, query='marketing', location='', roles=''):
         locs = pick(i, 'locationNames', 'locations', default=[]) or []
         out.append({'list': 'hiring', 'source': 'engine:wellfound', 'ref': pick(i, 'companyPortalUrl', 'companyUrl', 'portalUrl') or site,
                     'name': pick(i, 'companyName', 'name'), 'website': site or '', 'tagline': (pick(i, 'companyTagline', 'companyHighConcept', 'tagline') or '')[:300],
-                    'topics': [x for x in (pick(i, 'companyMarkets', 'markets', default=[]) or []) if isinstance(x, str)], 'people': [], 'emails': [],
+                    'topics': [x for x in (pick(i, 'companyMarkets', 'markets', default=[]) or []) if isinstance(x, str)], 'people': [],
+                    'emails': [e.lower() for e in i.get('companyEmails') or [] if isinstance(e, str)],
                     'signals': {'hiring': True, 'hiring_for': query, 'jobs_open': pick(i, 'jobCount', default=None),
                                 'team_size': pick(i, 'companySizeLabel', 'companySize', default=None),
                                 'funding_stage': i.get('companyFundingStage'), 'growing_fast': i.get('companyGrowingFast'),
