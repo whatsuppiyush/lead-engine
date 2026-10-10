@@ -1,0 +1,90 @@
+"""Export step."""
+import argparse, collections, json, urllib.error, urllib.request
+from core import DB, ENV
+
+LIST_NAME = {'producthunt': 'PH', 'launches': 'Launches', 'revenue': 'Revenue', 'funded': 'Funded', 'chrome': 'Chrome', 'shopify': 'Shopify'}
+PRODUCT_NAME = {'backlinkbot': 'BacklinkBot', 'hookads': 'HookAds', 'xautodm': 'XAutoDM', 'subredditmarketing': 'Subreddit Marketing',
+                'growwithreddit': 'GrowWithReddit', 'phlaunchkit': 'PH LaunchKit', 'tokgency': 'TokGency UGC'}
+PRIORITY = {  # per source list: which product to pitch first
+    'producthunt': ['backlinkbot', 'hookads', 'subredditmarketing', 'xautodm'],
+    'launches':    ['backlinkbot', 'phlaunchkit', 'hookads', 'xautodm'],
+    'revenue':     ['subredditmarketing', 'growwithreddit', 'xautodm', 'backlinkbot'],
+    'funded':      ['subredditmarketing', 'tokgency', 'xautodm', 'backlinkbot'],
+    'chrome':      ['backlinkbot', 'phlaunchkit', 'xautodm'],
+    'shopify':     ['hookads', 'backlinkbot'],
+}
+NEXT_PRODUCT_DAYS = 35
+API = 'https://api.instantly.ai/api/v2'
+
+
+def call(path, body=None, method=None):
+    req = urllib.request.Request(API + path, json.dumps(body).encode() if body is not None else None,
+                                 {'Authorization': f"Bearer {ENV['INSTANTLY_API_KEY']}", 'Content-Type': 'application/json',
+                                  'User-Agent': 'pp-daily-sync/1.0'}, method=method)
+    return json.load(urllib.request.urlopen(req, timeout=60))
+
+
+def due(catch_all=False):
+    return DB.execute("""
+      select l.email, l.first_name, l.last_name, l.company, l.website, l.email_status, l.reoon_status, l.email_origin, l.fit_products, l.x_handle,
+             l.linkedin, l.title, c.lists, c.domain_rating, c.signals, c.name as company_name,
+             (select array_agg(p.product) from instantly_pushes p where p.email = l.email) as pushed,
+             (select max(p.pushed_at) from instantly_pushes p where p.email = l.email) as last_push
+      from leads l join companies c on c.domain = l.company_domain
+      where cardinality(c.lists) > 0 and cardinality(l.fit_products) > 0
+        and (l.reoon_safe or (l.reoon_status = 'catch_all' and (l.email_origin = 'listed' or %(catch_all)s)))
+        and not exists (select 1 from suppression s where s.email = l.email)
+        and coalesce(l.best_bucket, 'Not contacted') not in ('Hot', 'Replied', 'Neutral', 'Bounced', 'Unsubscribed')""",
+        {'catch_all': catch_all}).fetchall()
+
+
+def plan(catch_all=False):
+    out = collections.defaultdict(list)
+    for r in due(catch_all):
+        pushed = set(r['pushed'] or [])
+        if pushed and r['last_push'] and (__import__('datetime').datetime.now(r['last_push'].tzinfo) - r['last_push']).days < NEXT_PRODUCT_DAYS:
+            continue
+        src = next((l for l in ('funded', 'revenue', 'producthunt', 'launches', 'chrome', 'shopify') if l in r['lists']), None)
+        if not src: continue
+        prod = next((p for p in PRIORITY[src] if p in r['fit_products'] and p not in pushed), None)
+        if not prod: continue
+        name = f"{LIST_NAME[src]} - {PRODUCT_NAME[prod]}" + ((' - catch-all (published)' if r['email_origin'] == 'listed' else ' - catch-all (guessed, test)') if r['reoon_status'] == 'catch_all' else '')
+        out[(name, prod)].append(r)
+    return out
+
+
+def list_id(name, cache):
+    if name in cache: return cache[name]
+    lists, after = [], None
+    while True:
+        d = call('/lead-lists?limit=100' + (f'&starting_after={after}' if after else ''))
+        lists += d.get('items', []); after = d.get('next_starting_after')
+        if not after: break
+    for l in lists: cache[l['name']] = l['id']
+    if name not in cache:
+        cache[name] = call('/lead-lists', {'name': name})['id']
+    return cache[name]
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser(); ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--include-guessed-catch-all', action='store_true'); a = ap.parse_args()
+    p, cache = plan(a.include_guessed_catch_all), {}
+    for (name, prod), rows in sorted(p.items()):
+        print(f'{name:45} {len(rows):5}')
+        if not a.apply: continue
+        lid = list_id(name, cache)
+        leads = [{'email': r['email'], 'first_name': r['first_name'], 'last_name': r['last_name'],
+                  'company_name': r['company_name'] or r['company'], 'website': r['website'],
+                  'custom_variables': {k: v for k, v in {'domainRating': r['domain_rating'], 'xHandle': r['x_handle'],
+                                       'title': r['title'], 'mrr': (r['signals'] or {}).get('mrr')}.items() if v is not None}}
+                 for r in rows]
+        for i in range(0, len(leads), 500):
+            try:
+                call('/leads/add', {'list_id': lid, 'skip_if_in_workspace': True, 'leads': leads[i:i + 500]})
+            except urllib.error.HTTPError as e:
+                raise SystemExit(f'{name}: Instantly HTTP {e.code} {e.read()[:300]!r}; nothing recorded for this batch')
+            for r in rows[i:i + 500]:
+                DB.execute('insert into instantly_pushes (email, product, list_name, list_id) values (%s, %s, %s, %s) on conflict do nothing',
+                           (r['email'], prod, name, lid))
+    if not a.apply: print('\ndry run, nothing sent. --apply pushes to the primary Instantly workspace.')
