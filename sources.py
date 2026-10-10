@@ -105,9 +105,14 @@ def producthunt(run_id, day=None, limit=1000, min_votes=0):
 
 # --------------------------------------------------------------------------- 2. launch directories
 def launches(run_id, limit=200, per_source=40):
-    items = apify('memo23/startup-launch-scraper', {
-        'sources': ['tinylaunch', 'microlaunch', 'launchingnext', 'betalist', 'uneed', 'startupfast'],
-        'maxItems': limit, 'maxItemsPerSource': per_source, 'resolveWebsites': True, 'enrichEmails': False}, run_id, max_usd=max(0.40, limit * 0.003))
+    # these actors stop at 100 items per run on a free Apify plan, so big pulls run one source per run
+    srcs = ['tinylaunch', 'microlaunch', 'launchingnext', 'betalist', 'uneed', 'startupfast']
+    groups = [srcs] if limit <= 100 else [[x] for x in srcs]
+    items = []
+    for g in groups:
+        n = min(limit, per_source * len(g))
+        items += apify('memo23/startup-launch-scraper', {'sources': g, 'maxItems': n, 'maxItemsPerSource': per_source,
+                       'resolveWebsites': True, 'enrichEmails': False}, run_id, max_usd=max(0.40, n * 0.003))
     return [{'list': 'launches', 'source': f"engine:launches:{pick(i, 'source', 'directory', default='directory')}",
              'ref': pick(i, 'listingUrl', 'url', 'launchUrl', 'directoryUrl', 'link'), 'name': pick(i, 'name', 'title'),
              'website': pick(i, 'website', 'websiteUrl', 'resolvedWebsite', 'homepage'), 'tagline': pick(i, 'tagline', 'description'),
@@ -179,8 +184,11 @@ def revenue(run_id, limit=100, mode='leaderboard'):
 def funded(run_id, limit=50, batches=('Summer 2026', 'Spring 2026')):
     if isinstance(batches, (str, int)) and str(batches).isdigit():      # '2026' -> every batch that year
         y = str(batches); batches = (f'Winter {y}', f'Spring {y}', f'Summer {y}', f'Fall {y}')
-    items = apify('memo23/y-combinator-scraper', {'mode': 'companies', 'batch': list(batches), 'maxItems': limit,
-                                                   'scrapeFounderDetails': True}, run_id, max_usd=max(0.30, limit * 0.002))
+    groups = [list(batches)] if limit <= 100 else [[b] for b in batches]   # 100 items per run on a free plan
+    items = []
+    for g in groups:
+        items += apify('memo23/y-combinator-scraper', {'mode': 'companies', 'batch': g, 'maxItems': limit,
+                                                       'scrapeFounderDetails': True}, run_id, max_usd=max(0.30, limit * 0.002))
     out = []
     for i in items:
         founders = pick(i, 'founders', default=[])
