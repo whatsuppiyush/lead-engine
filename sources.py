@@ -14,26 +14,46 @@ def pick(d, *keys, default=''):
     return default
 
 
-def apify(actor, run_input, run_id, max_usd=0.50, wait_s=600):
-    """Run an actor, wait, return its dataset items. maxTotalChargeUsd caps pay-per-event actors."""
-    tok = ENV['APIFY_TOKEN']
-    q = urllib.parse.urlencode({'token': tok, 'maxTotalChargeUsd': max_usd, 'waitForFinish': 60})
-    req = urllib.request.Request(f'{APIFY}/acts/{actor.replace("/", "~")}/runs?{q}', json.dumps(run_input).encode(),
-                                 {'Content-Type': 'application/json'})
-    run = json.load(urllib.request.urlopen(req, timeout=120))['data']
-    t0 = time.time()
-    while run['status'] in ('READY', 'RUNNING') and time.time() - t0 < wait_s:
-        time.sleep(10)
-        run = json.load(urllib.request.urlopen(f"{APIFY}/actor-runs/{run['id']}?token={tok}", timeout=60))['data']
-    usd = run.get('usageTotalUsd') or (run.get('chargedEventCounts') and None)
-    log_spend(run_id, 'apify', 1, usd)
-    if run['status'] != 'SUCCEEDED':
-        print(f'  apify {actor}: {run["status"]} (items so far are still used)')
-    items = json.load(urllib.request.urlopen(
-        f"{APIFY}/datasets/{run['defaultDatasetId']}/items?token={tok}&clean=1&format=json", timeout=120))
-    print(f'  apify {actor}: {len(items)} items, ${usd or 0:.4f}')
-    if items: print('  first item keys:', sorted(items[0].keys())[:40])
-    return items
+def _tokens():
+    toks = [t.strip() for t in (ENV.get('APIFY_TOKENS') or '').split(',') if t.strip()]
+    return toks or [ENV['APIFY_TOKEN']]
+
+
+def _left(tok):
+    try:
+        d = json.load(urllib.request.urlopen(f'{APIFY}/users/me/limits?token={tok}', timeout=30))['data']
+        return float(d['limits']['maxMonthlyUsageUsd']) - float(d['current']['monthlyUsageUsd'])
+    except Exception:
+        return 0.0
+
+
+def apify(actor, run_input, run_id, max_usd=0.50, wait_s=1800):
+    """Run an actor on whichever Apify account has the most credit left; on a credit error, try the next."""
+    ranked = sorted(_tokens(), key=_left, reverse=True)
+    last = None
+    for tok in ranked:
+        q = urllib.parse.urlencode({'token': tok, 'maxTotalChargeUsd': max_usd, 'waitForFinish': 60})
+        req = urllib.request.Request(f'{APIFY}/acts/{actor.replace("/", "~")}/runs?{q}', json.dumps(run_input).encode(),
+                                     {'Content-Type': 'application/json'})
+        try:
+            run = json.load(urllib.request.urlopen(req, timeout=120))['data']
+        except urllib.error.HTTPError as e:
+            last = f'HTTP {e.code} {e.read()[:160]!r}'
+            if e.code in (402, 403): print('  apify account out of credit, rotating'); continue
+            raise
+        t0 = time.time()
+        while run['status'] in ('READY', 'RUNNING') and time.time() - t0 < wait_s:
+            time.sleep(10)
+            run = json.load(urllib.request.urlopen(f"{APIFY}/actor-runs/{run['id']}?token={tok}", timeout=60))['data']
+        usd = run.get('usageTotalUsd')
+        log_spend(run_id, 'apify', 1, usd)
+        if run['status'] != 'SUCCEEDED':
+            print(f'  apify {actor}: {run["status"]} (items so far are still used)')
+        items = json.load(urllib.request.urlopen(
+            f"{APIFY}/datasets/{run['defaultDatasetId']}/items?token={tok}&clean=1&format=json", timeout=300))
+        print(f'  apify {actor}: {len(items)} items, ${usd or 0:.4f} (account {ranked.index(tok) + 1} of {len(ranked)})')
+        return items
+    raise RuntimeError(f'all Apify accounts failed: {last}')
 
 
 # ------------------------------------------------------------------------------- 1. Product Hunt
@@ -65,7 +85,8 @@ def producthunt(run_id, day=None, limit=1000, min_votes=0):
         posts = r['data']['posts']
         for e in posts['edges']:
             n = e['node']
-            if n['votesCount'] < min_votes: continue
+            if n['votesCount'] < min_votes:      # results come sorted by votes: nothing below this qualifies
+                posts['pageInfo']['hasNextPage'] = False; break
             out.append({'list': 'producthunt', 'source': 'engine:producthunt', 'ref': f"https://www.producthunt.com/products/{n['slug']}",
                         'name': n['name'], 'website': n['website'], 'tagline': n['tagline'],
                         'topics': [t['node']['name'] for t in n['topics']['edges']],

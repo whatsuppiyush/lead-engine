@@ -5,7 +5,7 @@ HERE = pathlib.Path(__file__).parent
 # secrets: .env locally, environment variables in CI (GitHub Actions)
 ENV = {k: v for k, v in os.environ.items() if k in ('DATABASE_URL', 'APIFY_TOKEN', 'REOON_API_KEY', 'PH_TOKEN',
                                                       'INSTANTLY_API_KEY', 'AZURE_CHAT_KEY', 'PH_RESOLVER_URL', 'PH_RESOLVER_SECRET', 'TELEGRAM_BOT_TOKEN',
-                                                      'TELEGRAM_CHAT_ID', 'GUMLOOP_API_KEY', 'GUMLOOP_USER_ID', 'GUMLOOP_AGENT_ID', 'GITHUB_TOKEN', 'GITHUB_REPOSITORY')}
+                                                      'TELEGRAM_CHAT_ID', 'GUMLOOP_API_KEY', 'GUMLOOP_USER_ID', 'GUMLOOP_AGENT_ID', 'APIFY_TOKENS', 'GITHUB_TOKEN', 'GITHUB_REPOSITORY')}
 if (HERE / '.env').exists():
     ENV = {**{k: v.strip().strip('"') for k, v in (l.strip().split('=', 1) for l in open(HERE / '.env')
                                                    if '=' in l and not l.startswith('#'))}, **ENV}
@@ -275,13 +275,16 @@ def fit(lists, topics, dr, signals, on_ph):
 
 
 def retag():
-    """Recompute fit for every lead whose company is on an engine list (cheap: SQL + rules, no API)."""
+    """Recompute fit for every lead whose company is on a list. Rules only; one bulk write."""
     rows = DB.execute("""select l.email, c.lists, c.topics, c.domain_rating, c.signals, c.domain
                          from leads l join companies c on c.domain = l.company_domain where cardinality(c.lists) > 0""").fetchall()
     ph = on_producthunt({r['domain'] for r in rows})
+    emails, fits, whys = [], [], []
     for r in rows:
         p, why = fit(r['lists'], r['topics'], r['domain_rating'], r['signals'] or {}, r['domain'] in ph)
-        DB.execute('update leads set fit_products = %s, fit_reason = %s where email = %s', (p, why, r['email']))
+        emails.append(r['email']); fits.append('{' + ','.join(p) + '}'); whys.append(why)
+    DB.execute("""update leads l set fit_products = v.f::text[], fit_reason = v.w
+                  from unnest(%s::text[], %s::text[], %s::text[]) as v(e, f, w) where l.email = v.e""", (emails, fits, whys))
     return len(rows)
 
 

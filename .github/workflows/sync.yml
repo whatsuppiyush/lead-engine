@@ -6,7 +6,7 @@ on:
   workflow_dispatch:                
     inputs:
       task:
-        description: "daily | producthunt | launches | revenue | funded | chrome | shopify | retag | push | selftest | verify | report"
+        description: "daily | producthunt | launches | revenue | funded | chrome | shopify | retag | push | selftest | verify | report | backfill"
         required: true
         default: daily
       limit:
@@ -19,20 +19,21 @@ on:
         default: ""
 
 concurrency:
-  group: daily-sync              # never two runs writing at once
+  group: ${{ github.event.inputs.task == 'backfill' && 'backfill' || 'daily-sync' }}              # never two runs writing at once
   cancel-in-progress: false
 
 permissions:
-  actions: read          # report.py counts this month's Actions minutes
+  actions: write          # report.py counts this month's Actions minutes
   contents: read
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 340
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      APIFY_TOKENS: ${{ secrets.APIFY_TOKENS }}
       REOON_API_KEY: ${{ secrets.REOON_API_KEY }}
       PH_TOKEN: ${{ secrets.PH_TOKEN }}
       INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
@@ -53,6 +54,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - name: run
+        id: run
         run: |
           set -o pipefail
           T="${{ github.event.inputs.task || 'daily' }}"
@@ -65,5 +67,14 @@ jobs:
             selftest) python run.py selftest ;;
             verify) python verify.py $A ;;
             report) python report.py $A ;;
+            backfill) python run.py backfill $A; python verify.py ;;
             *)     python run.py "$T" ${L:+--limit "$L"} $A ;;
           esac
+      - name: hand the rest of a backfill to a fresh job
+        if: github.event.inputs.task == 'backfill' && steps.run.outputs.next_from != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          A="${{ github.event.inputs.args }}"
+          NEXT=$(echo "$A" | sed -E "s/--from [0-9-]+/--from ${{ steps.run.outputs.next_from }}/")
+          gh workflow run sync.yml -R "$GITHUB_REPOSITORY" -f task=backfill -f args="$NEXT"

@@ -100,11 +100,16 @@ def build(hours):
     out.append(f"<b>Total this month: ${cash_month:.2f}</b>")
 
     out.append("\n<b>Budgets left</b>")
-    ap = get_json(f"https://api.apify.com/v2/users/me/limits?token={env('APIFY_TOKEN')}").get('data') or {}
-    if ap:
-        used, lim = ap['current']['monthlyUsageUsd'], ap['limits']['maxMonthlyUsageUsd'] or APIFY_PLAN_USD
-        out.append(f"Apify: ${lim - used:.2f} of ${lim:.0f} left this month")
-        if used / lim >= 0.8: warn.append(f"Apify {used / lim:.0%} of the monthly plan used")
+    toks = [t for t in (env('APIFY_TOKENS') or env('APIFY_TOKEN')).split(',') if t.strip()]
+    left = lim_all = 0.0
+    for tk in toks:
+        ap = get_json(f"https://api.apify.com/v2/users/me/limits?token={tk.strip()}").get('data') or {}
+        if ap:
+            lim = ap['limits']['maxMonthlyUsageUsd'] or APIFY_PLAN_USD
+            lim_all += lim; left += lim - ap['current']['monthlyUsageUsd']
+    if lim_all:
+        out.append(f"Apify: ${left:.2f} of ${lim_all:.0f} left this month ({len(toks)} accounts)")
+        if left / lim_all <= 0.2: warn.append(f'Apify: only ${left:.2f} left across all accounts')
     rb = get_json(f"https://emailverifier.reoon.com/api/v1/check-account-balance/?key={env('REOON_API_KEY')}")
     if 'remaining_daily_credits' in rb:
         out.append(f"Reoon: {rb['remaining_daily_credits']} daily + {rb['remaining_instant_credits']:,} purchased credits")

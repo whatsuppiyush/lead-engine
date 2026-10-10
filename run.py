@@ -108,6 +108,31 @@ def process(list_, items, run_id, dry=False):
     return st
 
 
+def backfill(start, end, min_votes, budget_min):
+    """Product Hunt day by day from start to end (inclusive), launches above min_votes only. Stops after budget_min
+    minutes and returns the next day still to do (None when finished), so CI can hand the rest to a fresh job."""
+    import datetime as dt, os, time
+    t0, day, end_d = time.time(), dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    while day <= end_d:
+        if (time.time() - t0) / 60 > budget_min:
+            break
+        run_id = core.start_run('producthunt', 'backfill')
+        try:
+            items = SOURCES['producthunt'](run_id, day=day.isoformat(), min_votes=min_votes)
+            stats = process('producthunt', items, run_id)
+            core.finish_run(run_id, {**dict(stats), 'backfill': True}, ok=True)
+            print(f'{day}: {dict(stats).get("items", 0)} launches > {min_votes - 1} votes, {dict(stats).get("with_contact", 0)} with contact', flush=True)
+        except Exception as e:
+            core.finish_run(run_id, {'error': repr(e), 'day': day.isoformat()}, ok=False)
+            print(f'{day}: FAILED {e!r}', flush=True)
+        day += dt.timedelta(days=1)
+    nxt = day.isoformat() if day <= end_d else None
+    if os.environ.get('GITHUB_OUTPUT'):
+        open(os.environ['GITHUB_OUTPUT'], 'a').write(f'next_from={nxt or ""}\n')
+    print('backfill next_from:', nxt or 'done')
+    return nxt
+
+
 def selftest():
     """Check every dependency from wherever this runs. Prints one line per check; exit 1 if a required one fails."""
     import socket, urllib.request, urllib.error
@@ -160,15 +185,20 @@ def migrate_gumloop():
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('list', choices=list(SOURCES) + ['migrate-gumloop', 'retag', 'selftest'])
+    ap.add_argument('list', choices=list(SOURCES) + ['migrate-gumloop', 'retag', 'selftest', 'backfill'])
     ap.add_argument('--limit', type=int)
     ap.add_argument('--day')
     ap.add_argument('--min-votes', type=int, default=0)
     ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--from', dest='start')
+    ap.add_argument('--to', dest='end')
+    ap.add_argument('--budget-min', type=int, default=300)
     ap.add_argument('--dr', action='store_true', help='look up domain rating via treg (paid)')
     a = ap.parse_args()
     if a.list == 'migrate-gumloop':
         migrate_gumloop(); sys.exit()
+    if a.list == 'backfill':
+        backfill(a.start, a.end, a.min_votes or 31, a.budget_min); sys.exit()
     if a.list == 'selftest':
         sys.exit(selftest())
     if a.list == 'retag':

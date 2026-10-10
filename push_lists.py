@@ -32,6 +32,7 @@ def due(catch_all=False):
              (select max(p.pushed_at) from instantly_pushes p where p.email = l.email) as last_push
       from leads l join companies c on c.domain = l.company_domain
       where cardinality(c.lists) > 0 and cardinality(l.fit_products) > 0
+        and l.reoon_checked_at > now() - interval '60 days'
         and (l.reoon_safe or (l.reoon_status = 'catch_all' and (l.email_origin = 'listed' or %(catch_all)s)))
         and not exists (select 1 from suppression s where s.email = l.email)
         and coalesce(l.best_bucket, 'Not contacted') not in ('Hot', 'Replied', 'Neutral', 'Bounced', 'Unsubscribed')""",
