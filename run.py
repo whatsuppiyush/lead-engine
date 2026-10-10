@@ -182,7 +182,7 @@ if __name__ == '__main__':
         sys.exit(selftest())
     if a.list == 'retag':
         print('retagged', core.retag(), 'leads'); sys.exit()
-    run_id = core.start_run(a.list, a.list)
+    run_id = core.start_run(a.list.replace('-store', ''), a.list)
     kw = {}
     if a.limit: kw['limit'] = a.limit
     for o in a.opt:

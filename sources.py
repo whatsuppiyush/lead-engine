@@ -220,10 +220,14 @@ def chrome(run_id, keywords=('productivity', 'seo', 'ai assistant', 'email', 'so
 
 # ---------------------------------------------------------------------------- 6. Shopify App Store
 def _shopify_page(url):
+    from core import http_get
+    return _shopify_page_html(http_get(url, timeout=20, limit=800_000)[1])
+
+
+def _shopify_page_html(page):
     """The public app page links to the developer's own site many times; the most-linked outside domain is it. Free."""
     import collections, re
-    from core import domain_of, http_get
-    _, page = http_get(url, timeout=20, limit=800_000)
+    from core import domain_of
     doms = collections.Counter(domain_of(h) for h in re.findall(r'href="(https?://[^"]+)"', page))
     doms.pop('', None)
     for d in list(doms):
@@ -248,5 +252,106 @@ def shopify(run_id, keywords=('reviews', 'upsell', 'email marketing', 'loyalty',
              'launch_date': None} for i, (site, brand) in zip(items, pages_)]
 
 
+# ----------------------------------------------------- free store sources: public sitemaps + listing pages
+def _seen_refs(source):
+    from core import DB
+    return {r['source_ref'] for r in DB.execute('select distinct source_ref from lead_sources where source = %s', (source,)).fetchall()}
+
+
+def _sitemap_urls(url, pattern):
+    import re
+    from core import http_get
+    _, xml = http_get(url, timeout=60, limit=40_000_000)
+    return list(dict.fromkeys(re.findall(pattern, xml)))
+
+
+def _date(s):
+    import datetime
+    try: return datetime.datetime.strptime(s.strip(), '%B %d, %Y').date().isoformat()
+    except Exception: return None
+
+
+def _shopify_listing(url):
+    import re
+    from core import http_get
+    _, p = http_get(url, timeout=20, limit=1_500_000)
+    if not p: return None
+    site, brand = _shopify_page_html(p)
+    em = re.search(r'data-developer-support-email="([^"]+)"', p)
+    la = re.search(r'Launched\s*(?:<[^>]+>\s*)*([A-Z][a-z]+ \d{1,2}, \d{4})', p)
+    rc = re.search(r'"ratingCount":\s*"?(\d+)', p)
+    name = re.search(r'<title>([^<|]+)', p)
+    return {'url': url, 'email': em[1].strip().lower() if em else '', 'launched': _date(la[1]) if la else None,
+            'reviews': int(rc[1]) if rc else 0, 'website': site, 'brand': brand,
+            'name': (name[1].strip() if name else url.rsplit('/', 1)[-1])}
+
+
+def shopify_sitemap(run_id, limit=500, launched_days=None):
+    """Every app in Shopify's public sitemap (~28k), each page carries the developer's support email. Free.
+    Fetches up to `limit` apps not seen before; launched_days keeps only apps launched in the last N days."""
+    import datetime
+    urls = _sitemap_urls('https://apps.shopify.com/sitemap_apps_en.xml', r'<loc>(https://apps\.shopify\.com/[^/<?]+)</loc>')
+    seen = _seen_refs('engine:shopify')
+    todo = [u for u in urls if u not in seen][:limit]
+    print(f'  shopify sitemap: {len(urls)} apps, {len(seen)} seen, fetching {len(todo)}')
+    with cf.ThreadPoolExecutor(8) as ex:
+        pages = [p for p in ex.map(_shopify_listing, todo) if p]
+    if launched_days:
+        cut = (datetime.date.today() - datetime.timedelta(days=int(launched_days))).isoformat()
+        pages = [p for p in pages if (p['launched'] or '') >= cut]
+    return [{'list': 'shopify', 'source': 'engine:shopify', 'ref': p['url'], 'name': p['brand'] or p['name'],
+             'website': p['website'], 'tagline': p['name'][:300], 'topics': ['e-commerce', 'shopify app'], 'people': [],
+             'emails': [p['email']] if p['email'] else [],
+             'signals': {'reviews': p['reviews'], 'launched': p['launched'], 'app': p['name']},
+             'launch_date': p['launched']} for p in pages]
+
+
+def _chrome_listing(url):
+    import re, html as h
+    from core import http_get
+    _, p = http_get(url + '?hl=en', timeout=25, limit=2_000_000)
+    if not p: return None
+    t = re.sub(r'<style.*?</style>|<script.*?</script>', '', p, flags=re.S)
+    txt = h.unescape(re.sub(r'\n\s*\n+', '\n', re.sub(r'<[^>]+>', '\n', t)))
+    users = re.search(r'\n([\d,]+)\+? users\n', txt)
+    upd = re.search(r'\nUpdated\n([A-Z][a-z]+ \d{1,2}, \d{4})', txt)
+    em = re.search(r'class="NnJuub">([^<@\s]+@[^<\s]+)</div>', p) or re.search(r'\n\s*Email\s*\n([^\s@]+@[^\s]+)\n', txt)
+    site = re.search(r'href="(https?://[^"]+)"[^>]*>(?:(?!</a>).){0,600}?Website</a>', p, re.S)
+    title = re.search(r'<title>([^<]+?)(?: - Chrome Web Store)?</title>', p)
+    return {'url': url, 'users': int(users[1].replace(',', '')) if users else 0, 'updated': _date(upd[1]) if upd else None,
+            'email': em[1].strip().lower() if em else '', 'website': h.unescape(site[1]) if site else '',
+            'trader': '\nTrader\n' in txt, 'name': h.unescape(title[1]).strip() if title else ''}
+
+
+def chrome_sitemap(run_id, limit=500, min_users=1000, shards=None):
+    """Chrome Web Store's public sitemap (~375k listings, 44 shards). Free. Keeps businesses: enough users,
+    a website or a non-Gmail email, updated in the last 6 months."""
+    import datetime, random
+    seen = _seen_refs('engine:chrome')
+    order = list(range(44)); random.shuffle(order)
+    out, fetched = [], 0
+    cut = (datetime.date.today() - datetime.timedelta(days=183)).isoformat()
+    free_mail = ('gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'qq.com', '163.com', 'icloud.com', 'proton.me', 'protonmail.com')
+    for s in ([int(x) for x in str(shards).split(',')] if shards else order):
+        urls = [u for u in _sitemap_urls(f'https://chromewebstore.google.com/sitemap?shard={s}',
+                                         r'<loc>(https://chromewebstore\.google\.com/detail/[^<]+)</loc>') if u not in seen]
+        batch = urls[:max(0, limit - fetched)]
+        with cf.ThreadPoolExecutor(8) as ex:
+            pages = [p for p in ex.map(_chrome_listing, batch) if p]
+        fetched += len(batch)
+        for p in pages:
+            biz = p['website'] or (p['email'] and not p['email'].endswith(free_mail))
+            if int(min_users) <= p['users'] <= 1_000_000 and biz and (p['updated'] or '') >= cut:
+                out.append(p)
+        print(f'  chrome shard {s}: fetched {len(batch)}, kept {len(out)} so far')
+        if fetched >= limit: break
+    return [{'list': 'chrome', 'source': 'engine:chrome', 'ref': p['url'], 'name': p['name'], 'website': p['website'],
+             'tagline': p['name'][:300], 'topics': ['chrome extension'], 'people': [],
+             'emails': [p['email']] if p['email'] else [],
+             'signals': {'users': p['users'], 'updated': p['updated'], 'trader': p['trader']},
+             'launch_date': None} for p in out]
+
+
 SOURCES = {'producthunt': producthunt, 'launches': launches, 'revenue': revenue, 'funded': funded,
-           'chrome': chrome, 'shopify': shopify}
+           'chrome': chrome, 'shopify': shopify,
+           'chrome-store': chrome_sitemap, 'shopify-store': shopify_sitemap}

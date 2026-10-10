@@ -9,8 +9,8 @@ dom=$(date +%d)
   $PY run.py producthunt
   [[ $dow == 1 ]] && $PY run.py launches --limit 300
   [[ $dow == 2 ]] && $PY run.py revenue --limit 200
-  [[ $dow == 3 ]] && $PY run.py chrome --limit 60
-  [[ $dow == 4 ]] && $PY run.py shopify --limit 100
+  $PY run.py chrome-store --limit 3000
+  $PY run.py shopify-store --limit 1000
   [[ $dom == 01 ]] && $PY run.py funded --limit 200
   $PY verify.py
   $PY run.py retag

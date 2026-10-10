@@ -4,8 +4,8 @@ from core import DB, ENV
 
 LISTS = [  # list, source prefix in leads.first_source, schedule note
     ('producthunt', 'engine:producthunt', 'daily'), ('launches', 'engine:launches', 'Mondays'),
-    ('revenue', 'engine:trustmrr', 'Tuesdays'), ('chrome', 'engine:chrome', 'Wednesdays'),
-    ('shopify', 'engine:shopify', 'Thursdays'), ('funded', 'engine:yc', '1st of the month')]
+    ('revenue', 'engine:trustmrr', 'Tuesdays'), ('chrome', 'engine:chrome', 'daily'),
+    ('shopify', 'engine:shopify', 'daily'), ('funded', 'engine:yc', '1st of the month')]
 TITLE = {'producthunt': 'Product Hunt', 'launches': 'Launch directories', 'revenue': 'TrustMRR', 'funded': 'YC',
          'chrome': 'Chrome Web Store', 'shopify': 'Shopify App Store'}
 GITHUB_FREE_MIN, APIFY_PLAN_USD, GUMLOOP_USD_PER_CREDIT = 2000, 5.0, 0.005
