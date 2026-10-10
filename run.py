@@ -193,6 +193,7 @@ if __name__ == '__main__':
     ap.add_argument('--from', dest='start')
     ap.add_argument('--to', dest='end')
     ap.add_argument('--budget-min', type=int, default=300)
+    ap.add_argument('--opt', action='append', default=[], help='source option key=value (comma = list), e.g. mode=all')
     ap.add_argument('--dr', action='store_true', help='look up domain rating via treg (paid)')
     a = ap.parse_args()
     if a.list == 'migrate-gumloop':
@@ -206,6 +207,9 @@ if __name__ == '__main__':
     run_id = core.start_run(a.list, a.list)
     kw = {}
     if a.limit: kw['limit'] = a.limit
+    for o in a.opt:
+        k, _, v = o.partition('=')
+        kw[k] = int(v) if v.isdigit() else (tuple(x.strip() for x in v.split(',')) if ',' in v else v)
     if a.list == 'producthunt':
         kw.update(day=a.day, min_votes=a.min_votes)
     try:
