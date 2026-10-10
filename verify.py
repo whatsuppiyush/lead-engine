@@ -7,15 +7,16 @@ MAP = {'safe': 'valid', 'role_account': 'role', 'catch_all': 'catch_all', 'inval
 API = 'https://emailverifier.reoon.com/api/v1'
 
 
-def todo(max_n, recheck_days):
+def todo(max_n, recheck_days, buckets=None):
+    scope = """(first_source like 'engine:%%' or first_source like 'gumloop:%%' or email in
+             (select email from lead_sources where source like 'engine:%%'))""" if not buckets else "buckets && %(b)s::text[]"
     return [r['email'] for r in DB.execute(f"""
       select email from leads
-      where (first_source like 'engine:%%' or first_source like 'gumloop:%%' or email in
-             (select email from lead_sources where source like 'engine:%%'))
+      where {scope}
         and coalesce(email_status, '') <> 'invalid'
         and (reoon_checked_at is null or reoon_checked_at < now() - interval '{int(recheck_days)} days')
         and not exists (select 1 from suppression s where s.email = leads.email)
-      order by created_at desc limit %s""", (max_n,)).fetchall()]
+      order by created_at desc limit %(n)s""", {'n': max_n, 'b': buckets}).fetchall()]
 
 
 def balance():
@@ -23,8 +24,8 @@ def balance():
     return int(d.get('remaining_daily_credits') or 0) + int(d.get('remaining_instant_credits') or 0)
 
 
-def run(max_n=5000, recheck_days=60):
-    emails = todo(max_n, recheck_days)
+def run(max_n=5000, recheck_days=60, buckets=None):
+    emails = todo(max_n, recheck_days, buckets)
     if not emails:
         print('reoon: nothing to check'); return {'checked': 0}
     left = balance()
@@ -64,5 +65,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--max', type=int, default=5000)
     ap.add_argument('--recheck-days', type=int, default=60)
+    ap.add_argument('--bucket', action='append', help='only leads in these buckets')
     a = ap.parse_args()
-    run(a.max, a.recheck_days)
+    run(a.max, a.recheck_days, a.bucket)
