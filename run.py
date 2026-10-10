@@ -6,6 +6,7 @@ from sources import SOURCES
 
 BIG_DR = 70           # authority this high = established company, not our buyer
 MAX_PEOPLE = 2        # contacts to chase per company
+OWN_EMAIL_LISTS = {'chrome', 'shopify', 'firefox', 'play', 'stores'}
 USE_DR = '--dr' in sys.argv   # opt in to treg domain-rating lookups
 
 
@@ -78,10 +79,14 @@ def process(list_, items, run_id, dry=False):
             if best:
                 contacts.append((p, best, status, 'listed' if best in mine else 'guessed')); used.add(best)
         # addresses the company publishes on its own site, not yet used: people first, then shared inboxes
-        published = [e for e in listed if e.endswith('@' + d) and e not in used]
+        # store listings (Chrome, Firefox, Play, Shopify) publish the developer's own address, often on another domain
+        given = [e.lower() for e in it.get('emails') or []] if list_ in OWN_EMAIL_LISTS else []
+        published = [e for e in listed if (e.endswith('@' + d) or e in given) and e not in used]
         published = sorted(published, key=is_role)[:2 if not contacts else 1]
         if published:
-            res, _ = ver.check(d, published, stop_at_first=False)
+            res = {}
+            for dom_ in dict.fromkeys(e.split('@')[1] for e in published):   # each address is checked on its own mail server
+                res.update(ver.check(dom_, [e for e in published if e.endswith('@' + dom_)], stop_at_first=False)[0])
             for e in published:
                 if res.get(e) == 'invalid': continue
                 st_ = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
@@ -192,8 +197,9 @@ if __name__ == '__main__':
         kw.update(day=a.day, min_votes=a.min_votes)
     try:
         items = SOURCES[a.list](run_id, **kw)
-        stats = process(a.list, items, run_id, dry=a.dry)
-        core.finish_run(run_id, dict(stats), ok=True)
+        stats = process(a.list.replace('-store', ''), items, run_id, dry=a.dry)
+        stats = {**dict(stats), **getattr(sys.modules['sources'], 'STORES_PAGES', {})} if a.list == 'stores' else dict(stats)
+        core.finish_run(run_id, stats, ok=True)
         print(json.dumps(dict(stats), indent=1))
     except Exception as e:
         core.finish_run(run_id, {'error': repr(e)}, ok=False); raise

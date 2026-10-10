@@ -260,19 +260,25 @@ def fit(lists, topics, dr, signals, on_ph):
     consumer, b2b, gtm = bool(CONSUMER.search(t)), bool(B2B.search(t)), bool(GTM.search(t))
     mrr = float(signals.get('mrr') or 0)
     lists = set(lists)
-    funded = 'funded' in lists or bool(signals.get('funding_usd'))
+    funded = 'funded' in lists or bool(signals.get('funding_usd')) or (signals.get('funding_stage') or '').lower() in (
+        'early stage', 'growth stage', 'late stage', 'series a', 'series b', 'seed') and bool(signals.get('growing_fast'))
     out, why = set(), []
     def add(p, r): out.add(p); why.append(f'{p}: {r}')
     # authority: directories for new sites, the outreach agent for established ones
     if dr is None or dr < 30:
-        if lists & {'producthunt', 'launches', 'chrome', 'shopify', 'revenue'}: add('backlinkbot', f'DR {dr if dr is not None else "?"} < 30')
+        if lists & {'producthunt', 'launches', 'chrome', 'shopify', 'revenue', 'showhn', 'firefox', 'play', 'hiring'}:
+            add('backlinkbot', f'DR {dr if dr is not None else "?"} < 30')
     elif dr < 60 and not consumer: add('backlinkbot', f'DR {dr}, outreach agent')
     # money decides the Reddit offer: done-for-you for companies with budget, self-serve below that
     if funded or mrr >= 5000: add('subredditmarketing', 'funded' if funded else f'MRR ${mrr:,.0f}')
     elif 'revenue' in lists or (b2b and (dr or 0) >= 30): add('growwithreddit', f'MRR ${mrr:,.0f}' if mrr else 'B2B with traction')
-    if consumer or 'shopify' in lists: add('hookads', 'consumer or merchant product')
-    if not consumer and (gtm or b2b or lists & {'revenue', 'funded', 'chrome'}): add('xautodm', 'sells to founders/marketers/devs on X')
-    if lists & {'launches', 'chrome'} and not on_ph: add('phlaunchkit', 'not on Product Hunt yet')
+    if consumer or lists & {'shopify', 'play'}: add('hookads', 'consumer, merchant or mobile app')
+    if 'stores' in lists and signals.get('meta_pixel'): add('hookads', 'store already runs Meta ads (pixel)')
+    if 'stores' in lists and (signals.get('tiktok') or signals.get('tiktok_pixel')): add('tokgency', 'store on TikTok')
+    if lists & {'hiring'} and not funded: add('growwithreddit', 'hiring for growth')
+    if not consumer and (gtm or b2b or lists & {'revenue', 'funded', 'chrome', 'firefox', 'hiring'}): add('xautodm', 'sells to founders/marketers/devs on X')
+    if lists & {'chrome', 'firefox'}: add('growwithreddit', 'extension looking for users')
+    if lists & {'launches', 'chrome', 'showhn', 'firefox'} and not on_ph: add('phlaunchkit', 'not on Product Hunt yet')
     if consumer and (funded or mrr >= 10000): add('tokgency', 'consumer brand with budget')
     return sorted(out), '; '.join(why)
 

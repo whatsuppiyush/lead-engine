@@ -2,7 +2,8 @@
 import argparse, collections, json, urllib.error, urllib.request
 from core import DB, ENV
 
-LIST_NAME = {'producthunt': 'PH', 'launches': 'Launches', 'revenue': 'Revenue', 'funded': 'Funded', 'chrome': 'Chrome', 'shopify': 'Shopify'}
+LIST_NAME = {'producthunt': 'PH', 'launches': 'Launches', 'revenue': 'Revenue', 'funded': 'Funded', 'chrome': 'Chrome', 'shopify': 'Shopify',
+             'showhn': 'Show HN', 'stores': 'Stores', 'hiring': 'Hiring', 'firefox': 'Firefox', 'play': 'Google Play'}
 PRODUCT_NAME = {'backlinkbot': 'BacklinkBot', 'hookads': 'HookAds', 'xautodm': 'XAutoDM', 'subredditmarketing': 'Subreddit Marketing',
                 'growwithreddit': 'GrowWithReddit', 'phlaunchkit': 'PH LaunchKit', 'tokgency': 'TokGency UGC'}
 PRIORITY = {  # per source list: which product to pitch first
@@ -12,11 +13,19 @@ PRIORITY = {  # per source list: which product to pitch first
     'funded':      ['subredditmarketing', 'tokgency', 'xautodm', 'backlinkbot'],
     'chrome':      ['backlinkbot', 'phlaunchkit', 'xautodm'],
     'shopify':     ['hookads', 'backlinkbot'],
+    'showhn':      ['backlinkbot', 'phlaunchkit', 'xautodm'],
+    'stores':      ['hookads', 'tokgency'],
+    'hiring':      ['subredditmarketing', 'growwithreddit', 'xautodm', 'backlinkbot'],
+    'firefox':     ['growwithreddit', 'backlinkbot', 'xautodm'],
+    'play':        ['hookads', 'backlinkbot'],
 }
 STAGE = {'producthunt': 'Launched', 'launches': 'Launched', 'chrome': 'Launched', 'shopify': 'Launched',
-         'revenue': 'Revenue', 'funded': 'Funded'}   # one campaign per product x audience x stage; copy differs by stage
+         'revenue': 'Revenue', 'funded': 'Funded', 'showhn': 'Launched', 'firefox': 'Launched', 'play': 'Apps',
+         'stores': 'Stores', 'hiring': 'Hiring'}   # one campaign per product x audience x stage; copy differs by stage
 SOURCE_LINE = {'producthunt': 'your Product Hunt launch', 'launches': 'your launch', 'chrome': 'your Chrome extension',
-               'shopify': 'your Shopify app', 'revenue': 'your numbers on TrustMRR', 'funded': 'the YC batch'}
+               'shopify': 'your Shopify app', 'revenue': 'your numbers on TrustMRR', 'funded': 'the YC batch',
+               'showhn': 'your Show HN post', 'stores': 'your store', 'hiring': 'that you are hiring', 'firefox': 'your Firefox add-on',
+               'play': 'your app on Google Play'}
 INBOX_ORDER = ['founders', 'founder', 'hi', 'hello', 'hey', 'team', 'contact', 'partnerships', 'marketing', 'growth', 'info', 'sales']
 NEXT_PRODUCT_DAYS = 35
 API = 'https://api.instantly.ai/api/v2'
@@ -50,7 +59,8 @@ def plan(catch_all=False):
         pushed = set(r['pushed'] or [])
         if pushed and r['last_push'] and (__import__('datetime').datetime.now(r['last_push'].tzinfo) - r['last_push']).days < NEXT_PRODUCT_DAYS:
             continue
-        src = next((l for l in ('funded', 'revenue', 'producthunt', 'launches', 'chrome', 'shopify') if l in r['lists']), None)
+        src = next((l for l in ('funded', 'hiring', 'revenue', 'producthunt', 'showhn', 'launches', 'chrome', 'firefox', 'shopify', 'play', 'stores')
+                    if l in r['lists']), None)
         if not src: continue
         prod = next((p for p in PRIORITY[src] if p in r['fit_products'] and p not in pushed), None)
         if not prod: continue

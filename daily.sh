@@ -11,6 +11,13 @@ dom=$(date +%d)
   [[ $dow == 2 ]] && $PY run.py revenue --limit 200
   $PY run.py chrome-store --limit 3000
   $PY run.py shopify-store --limit 1000
+  $PY run.py showhn --limit 500 --opt days=2
+  $PY run.py play --limit 300
+  [[ $dow == 1 || $dow == 4 ]] && $PY run.py stores --limit 200
+  [[ $dow == 3 ]] && $PY run.py hiring --limit 300 --opt query=marketing
+  [[ $dow == 3 ]] && $PY run.py hiring --limit 200 --opt query=marketing --opt location=india
+  [[ $dow == 6 ]] && $PY run.py hiring --limit 300 --opt query=growth
+  [[ $dow == 7 ]] && $PY run.py firefox --limit 500
   [[ $dom == 01 ]] && $PY run.py funded --limit 200
   $PY verify.py
   $PY run.py retag

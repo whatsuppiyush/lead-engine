@@ -1,5 +1,5 @@
 """Input adapters."""
-import concurrent.futures as cf, datetime as dt, json, time, urllib.error, urllib.parse, urllib.request
+import concurrent.futures as cf, datetime as dt, json, re, time, urllib.error, urllib.parse, urllib.request
 from core import ENV, log_spend, resolve_redirect
 
 APIFY = 'https://api.apify.com/v2'
@@ -352,6 +352,192 @@ def chrome_sitemap(run_id, limit=500, min_users=1000, shards=None):
              'launch_date': None} for p in out]
 
 
+# ----------------------------------------------------------------- growth-stage sources (2026-10-10)
+# Each keeps companies that are growing but not already winning: enough users or traction to be real,
+# not so many that they need nobody's help. The numbers are stored in signals so fit rules can use them.
+def _lst(v):
+    return [x.strip() for x in (v if isinstance(v, (list, tuple)) else str(v or '').split(',')) if str(x).strip()]
+
+
+def _get_json(url, timeout=30):
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (pp-daily-sync)', 'Accept': 'application/json'})
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+CODE_HOSTS = ('github.com', 'gitlab.com', 'huggingface.co', 'bitbucket.org', 'codeberg.org', 'sr.ht', 'npmjs.com', 'pypi.org',
+              'apps.apple.com', 'play.google.com', 'chromewebstore.google.com', 'youtube.com', 'x.com', 'twitter.com', 'medium.com',
+              'substack.com', 'reddit.com', 'news.ycombinator.com', 'docs.google.com', 'notion.site', 'vercel.app', 'netlify.app')
+
+
+def showhn(run_id, limit=1000, days=7, min_points=3):
+    """Show HN posts from the last N days via HN's public Algolia API. Free. Keeps product sites, not code repos."""
+    import time as _t
+    since = int(_t.time()) - int(days) * 86400
+    hits, page = [], 0
+    while len(hits) < int(limit) * 3 and page < 50:
+        d = _get_json(f'https://hn.algolia.com/api/v1/search_by_date?tags=show_hn&hitsPerPage=1000&page={page}'
+                      f'&numericFilters=created_at_i>{since},points>={int(min_points)}')
+        hits += d.get('hits') or []; page += 1
+        if page >= (d.get('nbPages') or 0): break
+    out = []
+    for h in hits:
+        url = h.get('url') or ''
+        host = urllib.parse.urlparse(url).netloc.lower().removeprefix('www.')
+        if not url or any(host == c or host.endswith('.' + c) for c in CODE_HOSTS): continue
+        title = re.sub(r'^Show HN:\s*', '', h.get('title') or '')
+        out.append({'list': 'showhn', 'source': 'engine:showhn', 'ref': f"https://news.ycombinator.com/item?id={h['objectID']}",
+                    'name': re.split(r'\s[–—-]\s|:\s', title)[0][:80], 'website': url, 'tagline': title[:300], 'topics': [],
+                    'people': [{'name': '', 'hn': h.get('author')}], 'emails': [],
+                    'signals': {'hn_points': h.get('points'), 'hn_comments': h.get('num_comments'), 'hn_author': h.get('author')},
+                    'launch_date': (h.get('created_at') or '')[:10] or None})
+    print(f'  show hn: {len(hits)} posts with >= {min_points} points, {len(out)} product sites')
+    return out[:int(limit)]
+
+
+def stores(run_id, limit=300, technologies='Facebook Pixel', country='US', category=None, start_page=None):
+    """Shopify stores already paying for Meta ads (Facebook Pixel installed), emails included. ~$0.60 per 100.
+    Pages advance by themselves: the next run starts after the last page fetched for the same filter."""
+    from core import DB
+    key = f"stores:{technologies}:{country}:{category or ''}"
+    last = DB.execute("select max((stats->>'page_to')::int) p from engine_runs where list = 'stores' and stats->>'filter' = %s", (key,)).fetchone()['p']
+    page = int(start_page or (last or 0) + 1)
+    items = []
+    for p in range(page, page + max(1, int(limit) // 100)):
+        inp = {'platform': 'shopify', 'page': p, 'emails': True, 'technologies': technologies}
+        if country: inp['country'] = country
+        if category: inp['category'] = category
+        got = apify('ecommerce_leads/store-leads-14m-e-commerce-leads', inp, run_id, max_usd=0.65)
+        items += got
+        if len(got) < 100: break
+    STORES_PAGES.update({'filter': key, 'page_from': page, 'page_to': p})
+    out = []
+    for i in items:
+        tech = ' '.join(i.get('technologies') or []) if isinstance(i.get('technologies'), list) else str(i.get('technologies') or '')
+        emails = i.get('emails') or []
+        emails = [e.strip().lower() for e in (emails if isinstance(emails, list) else re.split(r'[,|;\s]+', str(emails))) if '@' in e]
+        dom = (i.get('domain') or '').lower()
+        if dom.endswith('myshopify.com') and emails:    # the store's real domain is the one its email lives on
+            dom = emails[0].split('@')[1]
+        cats = [c for c in (i.get('categories') or '').split('|') if c] if isinstance(i.get('categories'), str) else (i.get('categories') or [])
+        out.append({'list': 'stores', 'source': 'engine:stores', 'ref': f"https://{i.get('domain')}", 'name': i.get('merchant') or dom,
+                    'website': f"https://{dom}", 'tagline': ', '.join(cats)[:300], 'topics': ['e-commerce', 'shopify store'] + cats,
+                    'people': [], 'emails': [e.lower() for e in emails][:3],
+                    'signals': {'meta_pixel': 'facebook pixel' in tech.lower(), 'tiktok_pixel': 'tiktok pixel' in tech.lower(),
+                                'instagram': i.get('instagram'), 'tiktok': i.get('tiktok'), 'country': i.get('country'), 'city': i.get('city')},
+                    'launch_date': None})
+    return out
+
+
+STORES_PAGES = {}
+
+
+def hiring(run_id, limit=300, query='marketing', location='', roles=''):
+    """Startups hiring on Wellfound, one row per company. Hiring for marketing/growth = they want customers now.
+    ~$3 per 1,000 job rows (residential proxy inside the actor)."""
+    inp = {'query': query, 'companyOnlyMode': True, 'enrichCompany': True, 'maxResults': int(limit), 'maxPages': max(1, int(limit) // 40)}
+    if location: inp['location'] = _lst(location)
+    if roles: inp['roles'] = _lst(roles)
+    items = apify('blackfalcondata/wellfound-scraper', inp, run_id, max_usd=max(0.30, int(limit) * 0.004))
+    out = []
+    for i in items:
+        site = pick(i, 'companyWebsite', 'website', 'companyUrl', 'companyHomepage')
+        locs = pick(i, 'locationNames', 'locations', default=[]) or []
+        out.append({'list': 'hiring', 'source': 'engine:wellfound', 'ref': pick(i, 'companyPortalUrl', 'companyUrl', 'portalUrl') or site,
+                    'name': pick(i, 'companyName', 'name'), 'website': site or '', 'tagline': (pick(i, 'companyTagline', 'companyHighConcept', 'tagline') or '')[:300],
+                    'topics': [x for x in (pick(i, 'companyMarkets', 'markets', default=[]) or []) if isinstance(x, str)], 'people': [], 'emails': [],
+                    'signals': {'hiring': True, 'hiring_for': query, 'jobs_open': pick(i, 'jobCount', default=None),
+                                'team_size': pick(i, 'companySizeLabel', 'companySize', default=None),
+                                'funding_stage': i.get('companyFundingStage'), 'growing_fast': i.get('companyGrowingFast'),
+                                'yc': i.get('companyYcFunded'), 'jobs': (i.get('sampleJobTitles') or [])[:5],
+                                'hq': ', '.join(locs) if isinstance(locs, list) else str(locs)},
+                    'launch_date': None})
+    return out
+
+
+def firefox(run_id, limit=300, min_users=300, max_users=100_000, months=6):
+    """Firefox add-ons from Mozilla's public API, by user count. Free. Keeps the growing middle: real users,
+    not a household name, updated recently, with a homepage or support email."""
+    import datetime
+    cut = (datetime.date.today() - datetime.timedelta(days=30 * int(months))).isoformat()
+    out, page = [], 1
+    while len(out) < int(limit) and page <= 600:
+        d = _get_json(f'https://addons.mozilla.org/api/v5/addons/search/?type=extension&sort=users&page_size=50&page={page}&lang=en-US')
+        rows = d.get('results') or []
+        if not rows: break
+        for a in rows:
+            users = int(a.get('average_daily_users') or 0)
+            if users > int(max_users): continue
+            if users < int(min_users): rows = []; break
+            hp = a.get('homepage') or {}
+            hp = (hp.get('url') or {}).get('en-US') if isinstance(hp, dict) else hp
+            hp = hp if isinstance(hp, str) else (list(hp.values())[0] if isinstance(hp, dict) and hp else '')
+            em = a.get('support_email')
+            em = em.get('en-US') if isinstance(em, dict) else em
+            if (a.get('last_updated') or '')[:10] < cut or not (hp or em): continue
+            nm = a.get('name') or {}
+            nm = nm.get('en-US') or next(iter(nm.values()), '') if isinstance(nm, dict) else nm
+            out.append({'list': 'firefox', 'source': 'engine:firefox', 'ref': a.get('url'), 'name': nm, 'website': hp or '',
+                        'tagline': ((a.get('summary') or {}).get('en-US') or '')[:300] if isinstance(a.get('summary'), dict) else '',
+                        'topics': ['browser extension'] + list(a.get('categories') or []),
+                        'people': [{'name': x.get('name', '')} for x in a.get('authors') or []][:2],
+                        'emails': [em.lower()] if em else [],
+                        'signals': {'users': users, 'rating': (a.get('ratings') or {}).get('average'),
+                                    'reviews': (a.get('ratings') or {}).get('count'), 'updated': (a.get('last_updated') or '')[:10]},
+                        'launch_date': (a.get('created') or '')[:10] or None})
+        if not rows: break
+        page += 1
+    print(f'  firefox: {len(out)} add-ons kept after {page} pages')
+    return out[:int(limit)]
+
+
+PLAY_QUERIES = ['habit tracker', 'budget planner', 'meditation', 'fitness coach', 'language learning', 'photo editor', 'video editor',
+                'ai chat', 'ai assistant', 'note taking', 'to do list', 'calorie counter', 'workout', 'sleep tracker', 'pdf scanner',
+                'invoice maker', 'crm', 'expense tracker', 'journal', 'flashcards', 'recipe', 'dating', 'pet care', 'baby tracker',
+                'period tracker', 'parking', 'travel planner', 'resume builder', 'ai headshot', 'ai photo', 'wallpaper', 'keyboard',
+                'vpn', 'password manager', 'podcast', 'music maker', 'drawing', 'kids learning', 'astrology', 'bible', 'quran',
+                'stock tracker', 'crypto wallet', 'job search', 'social media planner', 'ai writer', 'translator', 'qr scanner']
+
+
+def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_000, months=6, years=3):
+    """Google Play apps via the open-source google-play-scraper library (public pages, free). Every listing has a
+    developer email. Keeps the growing middle: 1k to 1M installs, updated in the last 6 months, released in the
+    last 3 years."""
+    import datetime, time as _t
+    from google_play_scraper import app as gp_app, search as gp_search
+    from core import DB
+    seen = {r['source_ref'] for r in DB.execute("select source_ref from lead_sources where source = 'engine:play'").fetchall()}
+    qs = _lst(queries) or PLAY_QUERIES
+    upd_cut = _t.time() - 30 * 86400 * int(months)
+    rel_cut = datetime.date.today().year - int(years)
+    ids = []
+    for q in qs:
+        try: ids += [r['appId'] for r in gp_search(q, lang='en', country='us', n_hits=30)]
+        except Exception as e: print('  play search failed', q, str(e)[:80])
+    ids = [i for i in dict.fromkeys(ids) if f'https://play.google.com/store/apps/details?id={i}' not in seen]
+    def detail(i):
+        try: return gp_app(i, lang='en', country='us')
+        except Exception: return None
+    with cf.ThreadPoolExecutor(6) as ex:
+        apps = [a for a in ex.map(detail, ids) if a]
+    out = []
+    for a in apps:
+        inst = int(a.get('realInstalls') or a.get('minInstalls') or 0)
+        rel = re.search(r'(\d{4})', a.get('released') or '')
+        if not (int(min_installs) <= inst <= int(max_installs)) or (a.get('updated') or 0) < upd_cut: continue
+        if rel and int(rel[1]) < rel_cut: continue
+        out.append({'list': 'play', 'source': 'engine:play', 'ref': f"https://play.google.com/store/apps/details?id={a['appId']}",
+                    'name': a.get('developer') or a.get('title'), 'website': a.get('developerWebsite') or '',
+                    'tagline': (a.get('summary') or a.get('title') or '')[:300], 'topics': ['mobile app', a.get('genre') or ''],
+                    'people': [], 'emails': [a['developerEmail'].lower()] if a.get('developerEmail') else [],
+                    'signals': {'installs': inst, 'rating': a.get('score'), 'reviews': a.get('ratings'), 'app': a.get('title'),
+                                'genre': a.get('genre'), 'iap': a.get('offersIAP'), 'ads': a.get('containsAds'),
+                                'released': a.get('released')},
+                    'launch_date': None})
+    print(f'  google play: {len(ids)} new apps found, {len(out)} in the growth window')
+    return out[:int(limit)]
+
+
 SOURCES = {'producthunt': producthunt, 'launches': launches, 'revenue': revenue, 'funded': funded,
            'chrome': chrome, 'shopify': shopify,
-           'chrome-store': chrome_sitemap, 'shopify-store': shopify_sitemap}
+           'chrome-store': chrome_sitemap, 'shopify-store': shopify_sitemap,
+           'showhn': showhn, 'stores': stores, 'hiring': hiring, 'firefox': firefox, 'play': play}
