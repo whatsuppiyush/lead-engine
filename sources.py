@@ -107,7 +107,7 @@ def producthunt(run_id, day=None, limit=1000, min_votes=0):
 def launches(run_id, limit=200, per_source=40):
     items = apify('memo23/startup-launch-scraper', {
         'sources': ['tinylaunch', 'microlaunch', 'launchingnext', 'betalist', 'uneed', 'startupfast'],
-        'maxItems': limit, 'maxItemsPerSource': per_source, 'resolveWebsites': True, 'enrichEmails': False}, run_id, max_usd=0.40)
+        'maxItems': limit, 'maxItemsPerSource': per_source, 'resolveWebsites': True, 'enrichEmails': False}, run_id, max_usd=max(0.40, limit * 0.003))
     return [{'list': 'launches', 'source': f"engine:launches:{pick(i, 'source', 'directory', default='directory')}",
              'ref': pick(i, 'listingUrl', 'url', 'launchUrl', 'directoryUrl', 'link'), 'name': pick(i, 'name', 'title'),
              'website': pick(i, 'website', 'websiteUrl', 'resolvedWebsite', 'homepage'), 'tagline': pick(i, 'tagline', 'description'),
@@ -146,7 +146,7 @@ def _trustmrr_page(url):
 def revenue(run_id, limit=100, mode='leaderboard'):
     """List of startups from Apify (fractions of a cent); every detail from TrustMRR's own pages (free)."""
     import re
-    items = apify('zerobreak/trustmrr-startup-scraper', {'mode': mode, 'maxItems': limit}, run_id, max_usd=0.10)
+    items = apify('zerobreak/trustmrr-startup-scraper', {'mode': mode, 'maxItems': limit}, run_id, max_usd=max(0.10, limit * 0.0005))
     with cf.ThreadPoolExecutor(4) as ex:
         pages = list(ex.map(lambda i: _trustmrr_page(i['url']), items))
     out = []
@@ -164,8 +164,10 @@ def revenue(run_id, limit=100, mode='leaderboard'):
 
 # ---------------------------------------------------------------------------------- 4. funded
 def funded(run_id, limit=50, batches=('Summer 2026', 'Spring 2026')):
+    if isinstance(batches, (str, int)) and str(batches).isdigit():      # '2026' -> every batch that year
+        y = str(batches); batches = (f'Winter {y}', f'Spring {y}', f'Summer {y}', f'Fall {y}')
     items = apify('memo23/y-combinator-scraper', {'mode': 'companies', 'batch': list(batches), 'maxItems': limit,
-                                                   'scrapeFounderDetails': True}, run_id, max_usd=0.30)
+                                                   'scrapeFounderDetails': True}, run_id, max_usd=max(0.30, limit * 0.002))
     out = []
     for i in items:
         founders = pick(i, 'founders', default=[])
