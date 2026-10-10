@@ -292,6 +292,7 @@ def retag():
     DB.execute("""update leads set contact_type = case when reoon_status = 'role_account'
                     or split_part(split_part(email, '@', 1), '+', 1) = any(%s) then 'company' else 'founder' end
                   where contact_type is null""", (sorted(ROLE),))
+    DB.execute('select refresh_buckets()')
     return len(rows)
 
 

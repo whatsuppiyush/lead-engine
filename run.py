@@ -163,29 +163,9 @@ def selftest():
     return 0 if all(not str(v).startswith('FAIL') for k, v in res.items() if k in ('neon', 'producthunt_api')) else 1
 
 
-def migrate_gumloop():
-    """Copy rows the old Gumloop agent wrote to leads.leads into the shared tables (idempotent)."""
-    rows = DB.execute("select * from leads.leads where email <> ''").fetchall()
-    for r in rows:
-        d = domain_of(r['product_url']) or r['email'].split('@')[1]
-        f, l = split(r['founder_name'])
-        status = {'safe': 'valid', 'valid': 'valid', 'role_account': 'role', 'catch_all': 'catch_all', 'disabled': 'invalid',
-                  'invalid': 'invalid'}.get(r['email_status'] or '', 'unverified')
-        save_company({'domain': d, 'name': r['product_name'], 'lists': ['producthunt'], 'topics': [], 'signals': {'upvotes': r['upvotes']},
-                      'dr': None, 'title': None}, 0)
-        save_lead({'email': r['email'].lower(), 'first_name': f or None, 'last_name': l or None, 'company': r['product_name'],
-                   'website': r['product_url'], 'domain': d, 'title': None, 'linkedin': r['founder_linkedin'] or None,
-                   'x': (r['founder_x'] or '').rstrip('/').split('/')[-1] or None, 'audience': 'B2B founders', 'status': status,
-                   'fit': r['fit_product'] or [], 'fit_reason': r['fit_reason'], 'contact_type': r['email_type'],
-                   'origin': 'gumloop', 'email_type': 'role inbox' if is_role(r['email']) else 'personal (own domain)',
-                   'launch_date': r['launch_date'] or r['found_date'], 'tagline': None},
-                  'gumloop:producthunt', r['source_url'] or r['product_url'], {k: str(v) for k, v in r.items()}, 0)
-    print(f'migrated {len(rows)} rows from leads.leads')
-
-
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('list', choices=list(SOURCES) + ['migrate-gumloop', 'retag', 'selftest', 'backfill'])
+    ap.add_argument('list', choices=list(SOURCES) + ['retag', 'selftest', 'backfill'])
     ap.add_argument('--limit', type=int)
     ap.add_argument('--day')
     ap.add_argument('--min-votes', type=int, default=0)
@@ -196,8 +176,6 @@ if __name__ == '__main__':
     ap.add_argument('--opt', action='append', default=[], help='source option key=value (comma = list), e.g. mode=all')
     ap.add_argument('--dr', action='store_true', help='look up domain rating via treg (paid)')
     a = ap.parse_args()
-    if a.list == 'migrate-gumloop':
-        migrate_gumloop(); sys.exit()
     if a.list == 'backfill':
         backfill(a.start, a.end, a.min_votes or 31, a.budget_min); sys.exit()
     if a.list == 'selftest':
