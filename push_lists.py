@@ -17,6 +17,7 @@ STAGE = {'producthunt': 'Launched', 'launches': 'Launched', 'chrome': 'Launched'
          'revenue': 'Revenue', 'funded': 'Funded'}   # one campaign per product x audience x stage; copy differs by stage
 SOURCE_LINE = {'producthunt': 'your Product Hunt launch', 'launches': 'your launch', 'chrome': 'your Chrome extension',
                'shopify': 'your Shopify app', 'revenue': 'your numbers on TrustMRR', 'funded': 'the YC batch'}
+INBOX_ORDER = ['founders', 'founder', 'hi', 'hello', 'hey', 'team', 'contact', 'partnerships', 'marketing', 'growth', 'info', 'sales']
 NEXT_PRODUCT_DAYS = 35
 API = 'https://api.instantly.ai/api/v2'
 
@@ -31,7 +32,7 @@ def call(path, body=None, method=None):
 def due(catch_all=False):
     return DB.execute("""
       select l.email, l.first_name, l.last_name, l.company, l.website, l.email_status, l.contact_type, l.reoon_status, l.email_origin, l.fit_products, l.x_handle,
-             l.linkedin, l.title, c.lists, c.domain_rating, c.signals, c.name as company_name,
+             l.linkedin, l.title, c.domain, c.lists, c.domain_rating, c.signals, c.name as company_name,
              (select array_agg(p.product) from instantly_pushes p where p.email = l.email) as pushed,
              (select max(p.pushed_at) from instantly_pushes p where p.email = l.email) as last_push
       from leads l join companies c on c.domain = l.company_domain
@@ -60,7 +61,15 @@ def plan(catch_all=False):
             name = f"{PRODUCT_NAME[prod]} - {who} - {STAGE[src]}"
         r['_src'] = src
         out[(name, prod)].append(r)
-    return out
+    # a company with a founder mailbox is not also emailed at its shared inbox: one conversation per company
+    has_founder = {r['domain'] for (n, _), rows in out.items() if ' - Founder - ' in n for r in rows}
+    rank = lambda r: next((i for i, w in enumerate(INBOX_ORDER) if r['email'].startswith(w + '@')), len(INBOX_ORDER))
+    for k in [k for k in out if ' - Inbox - ' in k[0]]:
+        best = {}
+        for r in sorted(out[k], key=rank):            # and only one shared inbox per company, the likeliest to reach a person
+            if r['domain'] not in has_founder: best.setdefault(r['domain'], r)
+        out[k] = list(best.values())
+    return {k: v for k, v in out.items() if v}
 
 
 def variables(r):
