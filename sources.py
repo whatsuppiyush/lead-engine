@@ -450,7 +450,7 @@ def hiring(run_id, limit=300, query='marketing', location='', roles=''):
                                 'team_size': pick(i, 'companySizeLabel', 'companySize', default=None),
                                 'funding_stage': i.get('companyFundingStage'), 'growing_fast': i.get('companyGrowingFast'),
                                 'yc': i.get('companyYcFunded'), 'jobs': (i.get('sampleJobTitles') or [])[:5],
-                                'hq': ', '.join(locs) if isinstance(locs, list) else str(locs)},
+                                'hq': (', '.join(locs) if isinstance(locs, list) else str(locs)) or ', '.join(_lst(location))},
                     'launch_date': None})
     return out
 
