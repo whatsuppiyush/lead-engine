@@ -377,6 +377,10 @@ def _get_json(url, timeout=30):
     return json.load(urllib.request.urlopen(req, timeout=timeout))
 
 
+FREE_MAIL = {'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com',
+             'proton.me', 'protonmail.com', 'gmx.de', 'gmx.net', 'web.de', 'qq.com', '163.com', 'yandex.ru', 'mail.ru', 'aol.com'}
+
+
 CODE_HOSTS = ('github.com', 'gitlab.com', 'huggingface.co', 'bitbucket.org', 'codeberg.org', 'sr.ht', 'npmjs.com', 'pypi.org',
               'apps.apple.com', 'play.google.com', 'chromewebstore.google.com', 'youtube.com', 'x.com', 'twitter.com', 'medium.com',
               'substack.com', 'reddit.com', 'news.ycombinator.com', 'docs.google.com', 'notion.site', 'vercel.app', 'netlify.app')
@@ -490,6 +494,7 @@ def firefox(run_id, limit=300, min_users=300, max_users=100_000, months=6):
             if (a.get('last_updated') or '')[:10] < cut or not (hp or em): continue
             nm = a.get('name') or {}
             nm = nm.get('en-US') or next(iter(nm.values()), '') if isinstance(nm, dict) else nm
+            if not hp and em and em.split('@')[-1].lower() not in FREE_MAIL: hp = 'https://' + em.split('@')[-1].lower()
             out.append({'list': 'firefox', 'source': 'engine:firefox', 'ref': a.get('url'), 'name': nm, 'website': hp or '',
                         'tagline': ((a.get('summary') or {}).get('en-US') or '')[:300] if isinstance(a.get('summary'), dict) else '',
                         'topics': ['browser extension'] + list(a.get('categories') or []),
