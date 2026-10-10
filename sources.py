@@ -133,7 +133,8 @@ def _trustmrr_page(url):
             if isinstance(o, dict) and o.get('@type') == 'Organization':
                 props = {p.get('name'): p.get('value') for p in o.get('additionalProperty') or [] if isinstance(p, dict)}
                 fs = o.get('founder') or []
-                return {'website': o.get('url') or '', 'category': o.get('category'), 'keywords': o.get('keywords') or [],
+                return {'name': o.get('name') or '', 'description': o.get('description') or '',
+                        'website': o.get('url') or '', 'category': o.get('category'), 'keywords': o.get('keywords') or [],
                         'country': (o.get('foundingLocation') or {}).get('identifier'), 'founded': o.get('foundingDate'),
                         'founders': [{'name': f.get('name', ''), 'x': f.get('sameAs') if isinstance(f.get('sameAs'), str) else ''}
                                      for f in (fs if isinstance(fs, list) else [fs]) if isinstance(f, dict)],
@@ -146,14 +147,26 @@ def _trustmrr_page(url):
 def revenue(run_id, limit=100, mode='leaderboard'):
     """List of startups from Apify (fractions of a cent); every detail from TrustMRR's own pages (free)."""
     import re
-    items = apify('zerobreak/trustmrr-startup-scraper', {'mode': mode, 'maxItems': limit}, run_id, max_usd=max(0.10, limit * 0.0005))
-    with cf.ThreadPoolExecutor(4) as ex:
+    if mode == 'all':   # the actor's own 'all' mode finds nothing, and TrustMRR's sitemap lists every startup for free
+        from core import http_get
+        _, xml = http_get('https://trustmrr.com/startup-sitemap.xml', timeout=60, limit=20_000_000)
+        urls = list(dict.fromkeys(u for u in re.findall(r'<loc>(https://trustmrr\.com/startup/[^/<]+)</loc>', xml)))
+        items = [{'url': u} for u in urls]
+        print(f'  trustmrr sitemap: {len(urls)} startups; keeping the {limit} with the most verified revenue')
+    else:
+        items = apify('zerobreak/trustmrr-startup-scraper', {'mode': mode, 'maxItems': min(limit, 1000)}, run_id,
+                      max_usd=max(0.10, min(limit, 1000) * 0.0005))
+    with cf.ThreadPoolExecutor(8) as ex:
         pages = list(ex.map(lambda i: _trustmrr_page(i['url']), items))
+    if mode == 'all':
+        rev = lambda pg: float(pg.get('revenue_30d') or 0) + float(pg.get('mrr') or 0)
+        pairs = sorted((x for x in zip(items, pages) if rev(x[1]) > 0), key=lambda x: -rev(x[1]))[:limit]
+        items, pages = [x[0] for x in pairs], [x[1] for x in pairs]
     out = []
     for i, pg in zip(items, pages):
         out.append({'list': 'revenue', 'source': 'engine:trustmrr', 'ref': i['url'],
-                    'name': re.sub(r' - \$.*$', '', i.get('name') or '').strip(), 'website': pg.get('website', ''),
-                    'tagline': (i.get('description') or '')[:300],
+                    'name': re.sub(r' - \$.*$', '', i.get('name') or pg.get('name') or '').strip(), 'website': pg.get('website', ''),
+                    'tagline': (i.get('description') or pg.get('description') or '')[:300],
                     'topics': [x for x in [pg.get('category')] + list(pg.get('keywords') or []) if x and x not in ('Other', 'Both')],
                     'people': pg.get('founders') or [], 'emails': [],
                     'signals': {k: pg.get(k) for k in ('mrr', 'revenue_30d', 'revenue_all_time', 'customers', 'country', 'founded')
