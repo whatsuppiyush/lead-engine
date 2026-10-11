@@ -41,7 +41,7 @@ def call(path, body=None, method=None):
 def due(catch_all=False):
     return DB.execute("""
       select l.email, l.first_name, l.last_name, l.company, l.website, l.email_status, l.contact_type, l.reoon_status, l.email_origin, l.fit_products, l.x_handle,
-             l.linkedin, l.title, c.domain, c.lists, c.domain_rating, c.signals, c.name as company_name,
+             l.linkedin, l.title, l.buckets, c.domain, c.lists, c.domain_rating, c.signals, c.name as company_name,
              (select array_agg(p.product) from instantly_pushes p where p.email = l.email) as pushed,
              (select max(p.pushed_at) from instantly_pushes p where p.email = l.email) as last_push
       from leads l join companies c on c.domain = l.company_domain
@@ -59,8 +59,9 @@ def plan(catch_all=False):
         pushed = set(r['pushed'] or [])
         if pushed and r['last_push'] and (__import__('datetime').datetime.now(r['last_push'].tzinfo) - r['last_push']).days < NEXT_PRODUCT_DAYS:
             continue
+        lists = [x for x in r['lists'] if not (x == 'producthunt' and 'product_hunt' not in (r['buckets'] or []))]   # PH: over 30 upvotes only
         src = next((l for l in ('funded', 'hiring', 'revenue', 'producthunt', 'showhn', 'launches', 'chrome', 'firefox', 'shopify', 'play', 'stores')
-                    if l in r['lists']), None)
+                    if l in lists), None)
         if not src: continue
         prod = next((p for p in PRIORITY[src] if p in r['fit_products'] and p not in pushed), None)
         if not prod: continue

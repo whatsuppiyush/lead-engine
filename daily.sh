@@ -6,7 +6,7 @@ dow=$(date +%u)
 dom=$(date +%d)
 {
   echo "== $(date)"
-  $PY run.py producthunt
+  $PY run.py producthunt --min-votes 31
   [[ $dow == 1 ]] && $PY run.py launches --limit 300
   [[ $dow == 2 ]] && $PY run.py revenue --limit 200
   $PY run.py chrome-store --limit 3000
