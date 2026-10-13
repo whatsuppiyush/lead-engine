@@ -514,7 +514,19 @@ PLAY_QUERIES = ['habit tracker', 'budget planner', 'meditation', 'fitness coach'
                 'invoice maker', 'crm', 'expense tracker', 'journal', 'flashcards', 'recipe', 'dating', 'pet care', 'baby tracker',
                 'period tracker', 'parking', 'travel planner', 'resume builder', 'ai headshot', 'ai photo', 'wallpaper', 'keyboard',
                 'vpn', 'password manager', 'podcast', 'music maker', 'drawing', 'kids learning', 'astrology', 'bible', 'quran',
-                'stock tracker', 'crypto wallet', 'job search', 'social media planner', 'ai writer', 'translator', 'qr scanner']
+                'stock tracker', 'crypto wallet', 'job search', 'social media planner', 'ai writer', 'translator', 'qr scanner',
+                'study planner', 'ai tutor', 'math solver', 'pomodoro', 'screen time', 'water reminder', 'step counter', 'yoga',
+                'running app', 'intermittent fasting', 'meal planner', 'grocery list', 'mood tracker', 'therapy', 'ai girlfriend',
+                'ai voice', 'text to speech', 'speech to text', 'transcription', 'meeting notes', 'scanner app', 'e signature',
+                'time tracker', 'shift planner', 'small business', 'pos', 'inventory', 'booking app', 'salon booking', 'fitness trainer',
+                'golf', 'fishing', 'hiking', 'cycling', 'chess', 'puzzle', 'word game', 'trivia', 'coloring', 'logo maker',
+                'poster maker', 'thumbnail maker', 'reels editor', 'collage', 'background remover', 'face swap', 'ai art',
+                'avatar', 'font', 'launcher', 'widget', 'ringtone', 'cleaner', 'battery', 'file manager', 'notes widget',
+                'habit coach', 'ai coach', 'english speaking', 'spanish learning', 'kids stories', 'bedtime stories', 'audiobooks',
+                'news app', 'weather', 'radar', 'car maintenance', 'fuel tracker', 'home workout', 'plant care', 'gardening',
+                'wedding planner', 'event planner', 'family organizer', 'shared expenses', 'split bills', 'loyalty card',
+                'coupon', 'cashback', 'side hustle', 'freelance', 'portfolio', 'resume scanner', 'interview prep']
+PLAY_COUNTRIES = ['us', 'gb', 'ca', 'au', 'in']
 
 
 def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_000, months=6, years=3):
@@ -525,12 +537,13 @@ def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_
     from google_play_scraper import app as gp_app, search as gp_search
     from core import DB
     seen = {r['source_ref'] for r in DB.execute("select source_ref from lead_sources where source = 'engine:play'").fetchall()}
-    qs = _lst(queries) or PLAY_QUERIES
+    import random
+    qs = _lst(queries) or random.sample(PLAY_QUERIES, 25)   # a different slice each day, so searches do not keep returning the same apps
     upd_cut = _t.time() - 30 * 86400 * int(months)
     rel_cut = datetime.date.today().year - int(years)
     ids = []
     for q in qs:
-        try: ids += [r['appId'] for r in gp_search(q, lang='en', country='us', n_hits=30)]
+        try: ids += [r['appId'] for r in gp_search(q, lang='en', country=random.choice(PLAY_COUNTRIES), n_hits=30)]
         except Exception as e: print('  play search failed', q, str(e)[:80])
     ids = [i for i in dict.fromkeys(ids) if f'https://play.google.com/store/apps/details?id={i}' not in seen]
     def detail(i):
