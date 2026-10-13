@@ -1,6 +1,7 @@
 """Local businesses from Yelp: phone first (for WhatsApp), email from the business's own website.
 
   python yelp.py --query "Plumbers,Dentists" --location "Austin, TX;Miami, FL" [--limit 240]
+  python yelp.py --query Plumbers,Med_Spas --location Austin_TX/Miami_FL      (same, quote-free, for GitHub args)
   python yelp.py --from-file saved.json --query Plumbers --location "Austin, TX"     (load results already scraped)
 
 Every business lands in yelp_businesses (one row per Yelp id). first_seen_at is the day we first saw it, which is
@@ -99,4 +100,7 @@ if __name__ == '__main__':
     ap.add_argument('--limit', type=int, default=40, help='businesses per search (Yelp stops around 240)')
     ap.add_argument('--from-file', help='load a saved actor result instead of scraping')
     a = ap.parse_args()
-    run([q.strip() for q in a.query.split(',') if q.strip()], [l.strip() for l in a.location.split(';') if l.strip()], a.limit, a.from_file)
+    # GitHub passes args without quotes, so "_" stands for a space and "/" separates locations: Austin,_TX/Dallas,_TX
+    q = [x.replace('_', ' ').strip() for x in a.query.split(',') if x.strip()]
+    locs = [x.replace('_', ' ').strip() for x in a.location.replace('/', ';').split(';') if x.strip()]
+    run(q, locs, a.limit, a.from_file)
