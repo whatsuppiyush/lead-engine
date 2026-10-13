@@ -173,7 +173,7 @@ if __name__ == '__main__':
     ap.add_argument('list', choices=list(SOURCES) + ['retag', 'selftest', 'backfill'])
     ap.add_argument('--limit', type=int)
     ap.add_argument('--day')
-    ap.add_argument('--min-votes', type=int, default=0)
+    ap.add_argument('--min-votes', type=int, default=31)   # rule: Product Hunt launches over 30 upvotes only
     ap.add_argument('--dry', action='store_true')
     ap.add_argument('--from', dest='start')
     ap.add_argument('--to', dest='end')
@@ -187,7 +187,7 @@ if __name__ == '__main__':
         sys.exit(selftest())
     if a.list == 'retag':
         print('retagged', core.retag(), 'leads'); sys.exit()
-    run_id = core.start_run(a.list.replace('-store', ''), a.list)
+    run_id = core.start_run(a.list.replace('-store', '').replace('-search', ''), a.list)
     kw = {}
     if a.limit: kw['limit'] = a.limit
     for o in a.opt:
@@ -197,7 +197,7 @@ if __name__ == '__main__':
         kw.update(day=a.day, min_votes=a.min_votes)
     try:
         items = SOURCES[a.list](run_id, **kw)
-        stats = process(a.list.replace('-store', ''), items, run_id, dry=a.dry)
+        stats = process(a.list.replace('-store', '').replace('-search', ''), items, run_id, dry=a.dry)
         stats = {**dict(stats), **getattr(sys.modules['sources'], 'STORES_PAGES', {})} if a.list == 'stores' else dict(stats)
         core.finish_run(run_id, stats, ok=True)
         print(json.dumps(dict(stats), indent=1))

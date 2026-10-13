@@ -557,6 +557,7 @@ def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_
 
 
 SOURCES = {'producthunt': producthunt, 'launches': launches, 'revenue': revenue, 'funded': funded,
-           'chrome': chrome, 'shopify': shopify,
+           'chrome': chrome_sitemap, 'shopify': shopify_sitemap,   # the old Apify keyword searches stay callable below
+           'chrome-search': chrome, 'shopify-search': shopify,
            'chrome-store': chrome_sitemap, 'shopify-store': shopify_sitemap,
            'showhn': showhn, 'stores': stores, 'hiring': hiring, 'firefox': firefox, 'play': play}
