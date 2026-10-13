@@ -7,10 +7,10 @@ LISTS = [  # list, source prefix in leads.first_source, schedule note
     ('revenue', 'engine:trustmrr', 'Tuesdays'), ('chrome', 'engine:chrome', 'daily'),
     ('shopify', 'engine:shopify', 'daily'), ('funded', 'engine:yc', '1st of the month'),
     ('showhn', 'engine:showhn', 'daily'), ('play', 'engine:play', 'daily'), ('stores', 'engine:stores', 'Mon + Thu'),
-    ('hiring', 'engine:wellfound', 'Wed + Sat'), ('firefox', 'engine:firefox', 'Sundays')]
+    ('hiring', 'engine:wellfound', 'Wed + Sat'), ('firefox', 'engine:firefox', 'Sundays'), ('yelp', 'engine:yelp', 'daily')]
 TITLE = {'producthunt': 'Product Hunt', 'launches': 'Launch directories', 'revenue': 'TrustMRR', 'funded': 'YC',
          'chrome': 'Chrome Web Store', 'shopify': 'Shopify App Store', 'showhn': 'Show HN', 'play': 'Google Play',
-         'stores': 'Shopify stores (Meta pixel)', 'hiring': 'Wellfound hiring', 'firefox': 'Firefox add-ons'}
+         'stores': 'Shopify stores (Meta pixel)', 'hiring': 'Wellfound hiring', 'firefox': 'Firefox add-ons', 'yelp': 'Yelp local businesses'}
 GITHUB_FREE_MIN, APIFY_PLAN_USD, GUMLOOP_USD_PER_CREDIT = 2000, 5.0, 0.005
 BAD = ('invalid', 'disabled', 'disposable', 'spamtrap', 'inbox_full')
 

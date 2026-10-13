@@ -12,6 +12,13 @@ import argparse, concurrent.futures as cf, json
 from core import DB, crawl, domain_of, is_role, save_company, save_lead, start_run, finish_run
 from sources import apify
 
+# daily rotation: each day the searches run longest ago go first (Tier 1 local businesses, fast-growing US metros)
+CATEGORIES = ['Roofers', 'HVAC', 'Plumbers', 'Electricians', 'Remodeling Contractors', 'Landscapers', 'Personal Injury Lawyers',
+              'Med Spas', 'Chiropractors', 'Auto Repair', 'Garage Door Services', 'Pest Control', 'Movers', 'Solar Installers',
+              'Pool Services', 'Cosmetic Dentists', 'Physical Therapy', 'Home Cleaning', 'Real Estate Agents', 'Gyms']
+CITIES = ['Austin, TX', 'Dallas, TX', 'Phoenix, AZ', 'Tampa, FL', 'Houston, TX', 'Atlanta, GA', 'Charlotte, NC', 'Nashville, TN',
+          'Denver, CO', 'Orlando, FL', 'San Antonio, TX', 'Las Vegas, NV', 'Raleigh, NC', 'Miami, FL', 'Jacksonville, FL']
+
 FREE_MAIL = ('gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'live.com', 'msn.com', 'att.net',
              'comcast.net', 'sbcglobal.net', 'verizon.net', 'me.com', 'protonmail.com', 'proton.me')
 
@@ -24,17 +31,28 @@ DB.execute("""create table if not exists yelp_businesses (
   first_seen_at timestamptz default now(), last_seen_at timestamptz default now())""")
 
 
+DB.execute("""create table if not exists yelp_searches (query text, location text, last_run_at timestamptz, businesses int,
+  primary key (query, location))""")
+
+
+def next_searches(n):
+    """The n category x city pairs run longest ago (never-run first)."""
+    done = {(r['query'], r['location']): r['last_run_at'] for r in DB.execute('select * from yelp_searches').fetchall()}
+    pairs = [(q, c) for c in CITIES for q in CATEGORIES]
+    return sorted(pairs, key=lambda p: (done.get(p) is not None, done.get(p) or 0))[:n]
+
+
 def own_emails(site, found):
     d = domain_of(site)
     keep = [e for e in found if d and e.endswith('@' + d)] or [e for e in found if e.split('@')[1] in FREE_MAIL]
     return list(dict.fromkeys(keep))[:3]
 
 
-def run(queries, locations, limit, from_file=None):
+def run(queries, locations, limit, from_file=None, pairs=None):
     run_id = start_run('yelp', 'yelp')
     stats = {'items': 0, 'new': 0, 'with_phone': 0, 'with_website': 0, 'with_email': 0, 'advertisers': 0}
-    for q in queries:
-        for loc in locations:
+    for q, loc in (pairs or [(q, l) for q in queries for l in locations]):
+        if True:
             items = json.load(open(from_file)) if from_file else apify(
                 'api-ninja/yelp-ultimate-scraper', {'query': q, 'location': loc, 'numberOfResults': max(40, limit),
                                                     'details': 'advanced'}, run_id, max_usd=max(0.25, limit * 0.0055))
@@ -88,6 +106,8 @@ def run(queries, locations, limit, from_file=None):
                                'fit_reason': None, 'contact_type': 'company' if is_role(e) else 'founder', 'origin': 'listed',
                                'email_type': 'role inbox' if is_role(e) else 'listed on website', 'launch_date': None, 'tagline': None},
                               'engine:yelp', row['url'], {'yelp_id': i['id'], 'phone': row['phone'], 'query': q, 'location': loc}, run_id)
+            DB.execute("""insert into yelp_searches values (%s, %s, now(), %s) on conflict (query, location)
+                          do update set last_run_at = now(), businesses = excluded.businesses""", (q, loc, len(items)))
             print(f'  {q} in {loc}: {len(items)} businesses, {len(items) - len(known)} new', flush=True)
     finish_run(run_id, stats)
     print(json.dumps(stats))
@@ -95,12 +115,13 @@ def run(queries, locations, limit, from_file=None):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--query', required=True, help='comma-separated Yelp searches, e.g. "Plumbers,Dentists"')
-    ap.add_argument('--location', required=True, help='semicolon-separated, e.g. "Austin, TX;Miami, FL"')
+    ap.add_argument('--rotate', type=int, help='run the N searches from CATEGORIES x CITIES that ran longest ago')
+    ap.add_argument('--query', default='', help='comma-separated Yelp searches, e.g. "Plumbers,Dentists"')
+    ap.add_argument('--location', default='', help='semicolon-separated, e.g. "Austin, TX;Miami, FL"')
     ap.add_argument('--limit', type=int, default=40, help='businesses per search (Yelp stops around 240)')
     ap.add_argument('--from-file', help='load a saved actor result instead of scraping')
     a = ap.parse_args()
     # GitHub passes args without quotes, so "_" stands for a space and "/" separates locations: Austin,_TX/Dallas,_TX
     q = [x.replace('_', ' ').strip() for x in a.query.split(',') if x.strip()]
     locs = [x.replace('_', ' ').strip() for x in a.location.replace('/', ';').split(';') if x.strip()]
-    run(q, locs, a.limit, a.from_file)
+    run(q, locs, a.limit, a.from_file, next_searches(a.rotate) if a.rotate else None)
