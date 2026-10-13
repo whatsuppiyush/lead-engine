@@ -66,6 +66,7 @@ jobs:
             selftest) python run.py selftest ;;
             verify) python verify.py $A ;;
             report) python report.py $A ;;
+            yelp)  eval python yelp.py $A ;;
             backfill) python run.py backfill $A; python verify.py ;;
             *)     python run.py "$T" ${L:+--limit "$L"} $A ;;
           esac
