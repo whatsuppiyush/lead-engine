@@ -1,8 +1,7 @@
 name: daily-sync
 
 on:
-  schedule:
-    - cron: "30 11 * * *"          # daily
+  # daily run is started at 11:30 UTC by the ph-resolve Worker's timer (GitHub's own schedule ran 5-9 hours late)
   workflow_dispatch:                
     inputs:
       task:

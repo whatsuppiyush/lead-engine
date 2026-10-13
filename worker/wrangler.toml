@@ -2,3 +2,6 @@ name = "ph-resolve"
 main = "worker.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
+
+[triggers]
+crons = ["30 11 * * *", "50 11 * * *"]   # daily run at 5 PM IST, then a check that it started
