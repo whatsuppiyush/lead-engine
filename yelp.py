@@ -29,6 +29,8 @@ DB.execute("""create table if not exists yelp_businesses (
   message_enabled bool, response_time text, yelp_url text, raw jsonb,
   whatsapp text default 'unknown',                 -- unknown | yes | no, set when someone checks
   first_seen_at timestamptz default now(), last_seen_at timestamptz default now())""")
+for col in ('year_established int', 'timezone text', 'hours jsonb', 'photo_count int', 'phone_e164 text', 'yelp_category_aliases text[]'):
+    DB.execute(f'alter table yelp_businesses add column if not exists {col}')
 
 
 DB.execute("""create table if not exists yelp_searches (query text, location text, last_run_at timestamptz, businesses int,
@@ -80,16 +82,27 @@ def run(queries, locations, limit, from_file=None, pairs=None):
                        'chain': bool(i.get('is_chain_business')), 'closed': bool(i.get('is_closed')),
                        'msg': bool(i.get('is_message_to_business_enabled')),
                        'rt': (i.get('message_the_business') or {}).get('response_time'),
-                       'url': (i.get('share_url') or '').split('?')[0], 'raw': json.dumps({'year_established': fb.get('year_established')})}
+                       'url': (i.get('share_url') or '').split('?')[0], 'raw': json.dumps({'year_established': fb.get('year_established')}),
+                       'ye': int(fb['year_established']) if str(fb.get('year_established') or '').isdigit() else None,
+                       'tz': i.get('timezone'), 'hours': json.dumps(i.get('localized_hours') or i.get('hours')) if (i.get('localized_hours') or i.get('hours')) else None,
+                       'photos': i.get('photo_count'),
+                       'e164': ('+1' + i['phone'][-10:]) if (i.get('phone') or '').isdigit() and len(i['phone']) in (10, 11) and (i.get('country') or 'US') in ('US', 'CA') else None,
+                       'aliases': [c.get('category_filter') for c in i.get('categories') or [] if isinstance(c, dict) and c.get('category_filter')]}
                 DB.execute("""insert into yelp_businesses (yelp_id, name, phone, phone_display, website, domain, emails, query, location,
                     city, state, country, address, categories, rating, review_count, price, is_advertiser, call_tracking, is_chain,
-                    is_closed, message_enabled, response_time, yelp_url, raw)
+                    is_closed, message_enabled, response_time, yelp_url, raw, year_established, timezone, hours, photo_count,
+                    phone_e164, yelp_category_aliases)
                   values (%(id)s, %(name)s, %(phone)s, %(phone_display)s, %(website)s, %(domain)s, %(emails)s, %(query)s, %(location)s,
                     %(city)s, %(state)s, %(country)s, %(address)s, %(categories)s, %(rating)s, %(reviews)s, %(price)s, %(adv)s, %(ct)s,
-                    %(chain)s, %(closed)s, %(msg)s, %(rt)s, %(url)s, %(raw)s)
+                    %(chain)s, %(closed)s, %(msg)s, %(rt)s, %(url)s, %(raw)s, %(ye)s, %(tz)s, %(hours)s, %(photos)s, %(e164)s, %(aliases)s)
                   on conflict (yelp_id) do update set phone = excluded.phone, rating = excluded.rating, review_count = excluded.review_count,
                     is_advertiser = excluded.is_advertiser, call_tracking = excluded.call_tracking, is_closed = excluded.is_closed,
                     emails = case when cardinality(excluded.emails) > 0 then excluded.emails else yelp_businesses.emails end,
+                    year_established = coalesce(excluded.year_established, yelp_businesses.year_established),
+                    timezone = coalesce(excluded.timezone, yelp_businesses.timezone), hours = coalesce(excluded.hours, yelp_businesses.hours),
+                    photo_count = coalesce(excluded.photo_count, yelp_businesses.photo_count),
+                    phone_e164 = coalesce(excluded.phone_e164, yelp_businesses.phone_e164),
+                    yelp_category_aliases = coalesce(excluded.yelp_category_aliases, yelp_businesses.yelp_category_aliases),
                     last_seen_at = now()""", row)
                 stats['items'] += 1; stats['new'] += i['id'] not in known
                 stats['with_phone'] += bool(row['phone']); stats['with_website'] += bool(site)
