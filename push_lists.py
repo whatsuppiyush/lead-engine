@@ -59,7 +59,9 @@ def plan(catch_all=False):
         pushed = set(r['pushed'] or [])
         if pushed and r['last_push'] and (__import__('datetime').datetime.now(r['last_push'].tzinfo) - r['last_push']).days < NEXT_PRODUCT_DAYS:
             continue
-        lists = [x for x in r['lists'] if not (x == 'producthunt' and 'product_hunt' not in (r['buckets'] or []))]   # PH: over 30 upvotes only
+        b = r['buckets'] or []
+        # PH: over 30 upvotes, or under 30 collected from 2026-10-11 (own campaign); the older low-upvote archive is never pushed
+        lists = [x for x in r['lists'] if not (x == 'producthunt' and not {'product_hunt', 'product_hunt_under_30'} & set(b))]
         src = next((l for l in ('funded', 'hiring', 'revenue', 'producthunt', 'showhn', 'launches', 'chrome', 'firefox', 'shopify', 'play', 'stores')
                     if l in lists), None)
         if not src: continue
@@ -69,7 +71,8 @@ def plan(catch_all=False):
         if r['reoon_status'] == 'catch_all':
             name = f"{PRODUCT_NAME[prod]} - Catch-all " + ('(published)' if r['email_origin'] == 'listed' else '(guessed, test)')
         else:
-            name = f"{PRODUCT_NAME[prod]} - {who} - {STAGE[src]}"
+            stage = 'Launched under 30' if src == 'producthunt' and 'product_hunt' not in b else STAGE[src]
+            name = f"{PRODUCT_NAME[prod]} - {who} - {stage}"
         r['_src'] = src
         out[(name, prod)].append(r)
     # a company with a founder mailbox is not also emailed at its shared inbox: one conversation per company
