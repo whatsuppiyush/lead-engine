@@ -4,7 +4,7 @@ compatibility_date = "2026-09-01"
 workers_dev = true
 
 [triggers]
-crons = ["30 11 * * *", "50 11 * * *"]   # daily run at 5 PM IST, then a check that it started
+crons = ["30 11 * * *", "50 11 * * *", "30 3 * * *"]   # daily run at 5 PM IST, a check that it started, 9 AM IST Telegram report
 
 [observability]
 enabled = true                         # keeps the timer's console.log lines in the dashboard

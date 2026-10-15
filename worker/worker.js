@@ -4,7 +4,10 @@
 //   -> {"results": [{"url": "...", "status": 301, "location": "https://site.com/?ref=producthunt"}]}
 // It also starts the daily run: the 11:30 UTC timer dispatches sync.yml, the 11:50 one dispatches again if nothing started.
 //   POST /daily-status  (same bearer)  -> whether today's run has started, without starting anything
+//   POST /morning-report  (same bearer)  {"send": true} -> the 09:00 IST Telegram report (no body = preview only)
 //   POST /dispatch      (same bearer)  {"task": "producthunt", "args": "--day 2026-10-12"} -> starts one run (one at a time!)
+import { buildReport, sendTelegram } from './report.js';
+
 const WORKFLOW = 'https://api.github.com/repos/whatsuppiyush/pp-daily-sync/actions/workflows/sync.yml';
 const gh = (env, path, init = {}) => fetch(WORKFLOW + path, {
   ...init,
@@ -25,6 +28,7 @@ async function dispatch(env, task = 'daily', args = '', limit = '') {
 
 export default {
   async scheduled(event, env) {
+    if (event.cron === '30 3 * * *') { await sendTelegram(env, (await buildReport(env)).text); return; }
     if (event.cron === '30 11 * * *') { await dispatch(env); console.log('daily run dispatched'); return; }
     const runs = await runsToday(env);
     if (runs.length) { console.log(`daily run already started: ${runs[0].html_url}`); return; }
@@ -39,6 +43,12 @@ export default {
         const runs = await runsToday(env);
         return Response.json({ started: runs.length > 0, runs: runs.map((x) => ({ status: x.status, conclusion: x.conclusion, event: x.event, created_at: x.created_at })) });
       } catch (e) { return Response.json({ error: String(e) }, { status: 502 }); }
+    }
+    if (new URL(req.url).pathname === '/morning-report') {
+      const { send } = await req.json().catch(() => ({}));
+      const report = await buildReport(env);
+      if (send) await sendTelegram(env, report.text);
+      return Response.json({ ...report, sent: !!send });
     }
     if (new URL(req.url).pathname === '/dispatch') {
       const { task, args, limit } = await req.json().catch(() => ({}));
