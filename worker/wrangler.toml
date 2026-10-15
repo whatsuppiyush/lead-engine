@@ -5,3 +5,6 @@ workers_dev = true
 
 [triggers]
 crons = ["30 11 * * *", "50 11 * * *"]   # daily run at 5 PM IST, then a check that it started
+
+[observability]
+enabled = true                         # keeps the timer's console.log lines in the dashboard
