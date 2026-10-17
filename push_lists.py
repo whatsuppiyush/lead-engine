@@ -92,7 +92,9 @@ def variables(r):
     company = r['company_name'] or r['company']
     first = (r['first_name'] or '').strip()
     first = first if first.lower() not in ('', 'there', 'hi', 'hello', 'team', 'admin', 'info') else None
-    greeting = (first or 'there') if r['contact_type'] != 'company' else f'{company} team'   # "Hi {{greeting}},"
+    # "Hi {{greeting}},": the founder's name whenever we have it, shared inboxes included (team@ is read by the founder at
+    # this size); a shared inbox with no known founder gets "<Company> team", a personal one "there"
+    greeting = first or ('there' if r['contact_type'] != 'company' else f'{company} team')
     v = {'greeting': greeting, 'maker': first, 'source': r['_src'], 'sourceLine': SOURCE_LINE[r['_src']], 'audience': r['contact_type'],
          'launchMonth': datetime.date.fromisoformat(sg['ph_day']).strftime('%B') if sg.get('ph_day') else None,
          'upvotes': sg.get('upvotes'), 'tagline': sg.get('tagline'), 'mrr': sg.get('mrr'), 'ycBatch': sg.get('yc_batch'),
