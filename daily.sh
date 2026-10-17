@@ -12,8 +12,8 @@ dom=$(date +%d)
   $PY run.py chrome-store --limit 3000
   $PY run.py shopify-store --limit 1000
   $PY run.py showhn --limit 500 --opt days=2
-  $PY run.py marketingdb --limit 300      # only listings not seen before; ~5-10 new a day
-  $PY outscraper.py --signal mdb_week --apply --max-usd 0.30   # paid fallback for listings the free crawl missed
+  [[ $dow == 7 ]] && $PY run.py marketingdb --limit 300      # weekly (Sunday): only listings not seen before, ~10-50 a week
+  [[ $dow == 7 ]] && $PY outscraper.py --signal mdb_week --apply --max-usd 0.50   # Sunday: paid fallback for what the crawl missed
   $PY run.py play --limit 300
   [[ $dow == 1 || $dow == 4 ]] && $PY run.py stores --limit 200
   [[ $dow == 3 ]] && $PY run.py hiring --limit 300 --opt query=marketing
