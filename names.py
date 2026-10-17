@@ -13,23 +13,41 @@ from core import DB, domain_of, http_get, name_for, ph_makers_direct, site_peopl
 SKIP = ('file:%creators%',)   # creator lists are people already, not founder lists
 
 
-def people_by_domain(domains):
-    out = collections.defaultdict(list)
-    for r in DB.execute("""select l.company_domain d, s.source, s.payload from leads l join lead_sources s using (email)
-                           where l.company_domain = any(%s) and jsonb_typeof(s.payload->'people') = 'array'""", (domains,)).fetchall():
+def _uniq(ps):
+    seen, out = set(), []   # one entry per person, the richest record first
+    for p in sorted(ps, key=lambda p: -len([v for v in p.values() if v])):
+        k = (p.get('name') or '').strip().lower()
+        if k and k not in seen: seen.add(k); out.append(p)
+    return out
+
+
+def _named(ps):
+    return [p for p in ps or [] if isinstance(p, dict) and (p.get('name') or '').strip() not in ('', '[REDACTED]')]
+
+
+def people_for(rows):
+    """{email: people} for leads [{email, d}]. An email's own records always count. Other leads at the same company
+    count only when the company is a real domain: the old PH scraper filed app-store products under apps.apple.com /
+    play.google.com, and pooling those would hand one app's maker to every other app. An email linked to more than 3
+    Product Hunt products is a scrape artefact (help@zuuks.com sat on 200), so its records are ignored."""
+    emails = [r['email'] for r in rows]
+    junk = {r['email'] for r in DB.execute("""select email from lead_sources where email = any(%s) and source like '%%producthunt%%'
+                                              group by 1 having count(distinct source_ref) > 3""", (emails,)).fetchall()}
+    own = collections.defaultdict(list)
+    for r in DB.execute("""select email, payload from lead_sources where email = any(%s) and jsonb_typeof(payload->'people') = 'array'""",
+                        (emails,)).fetchall():
+        if r['email'] not in junk: own[r['email']] += _named(r['payload']['people'])
+    real = sorted({r['d'] for r in rows if r['d'] and domain_of(r['d']) == r['d'].removeprefix('www.')})
+    dom = collections.defaultdict(list)
+    for r in DB.execute("""select l.company_domain d, s.payload from leads l join lead_sources s using (email)
+                           where l.company_domain = any(%s) and jsonb_typeof(s.payload->'people') = 'array'""", (real,)).fetchall():
         site = domain_of(r['payload'].get('website'))
         if site and site != r['d']: continue   # an address listed for another product: its people are that product's
-        for p in r['payload']['people'] or []:
-            if isinstance(p, dict) and (p.get('name') or '').strip() not in ('', '[REDACTED]'): out[r['d']].append(p)
-    for r in DB.execute("select domain d, signals->'makers' m from companies where domain = any(%s) and signals ? 'makers'", (domains,)).fetchall():
-        out[r['d']] += [p for p in r['m'] or [] if isinstance(p, dict) and p.get('name')]
-    for d, ps in out.items():   # one entry per person, the richest record first
-        seen, uniq = set(), []
-        for p in sorted(ps, key=lambda p: -len([v for v in p.values() if v])):
-            k = (p.get('name') or '').strip().lower()
-            if k not in seen: seen.add(k); uniq.append(p)
-        out[d] = uniq
-    return out
+        dom[r['d']] += _named(r['payload']['people'])
+    for r in DB.execute("select domain d, signals->'makers' m from companies where domain = any(%s) and jsonb_typeof(signals->'makers') = 'array'",
+                        (real,)).fetchall():
+        dom[r['d']] += _named(r['m'])
+    return {r['email']: _uniq(own[r['email']] + (dom.get(r['d']) or [])) for r in rows}
 
 
 def run(since, apply):
@@ -40,14 +58,14 @@ def run(since, apply):
       where l.first_name is null and l.company_domain is not null and l.created_at >= %s
         and not exists (select 1 from lead_sources s where s.email = l.email and ({' or '.join(['s.source like %s'] * len(SKIP))}))""",
                       (since, *SKIP)).fetchall()
-    ppl = people_by_domain(sorted({r['d'] for r in rows}))
+    ppl = people_for(rows)
     done, by_src, sample = [], collections.Counter(), []
     for r in rows:
-        f, l = name_for(r['email'], ppl.get(r['d']), r['co'])
+        f, l = name_for(r['email'], ppl.get(r['email']), r['co'])
         if not f: continue
         done.append((r['email'], f, l)); by_src[r['srcs']] += 1
         if len(sample) < 25: sample.append(f"{r['email']} -> {f} {l}".strip())
-    print(f'{len(rows)} unnamed leads since {since}; {sum(1 for r in rows if ppl.get(r["d"]))} have people on record; '
+    print(f'{len(rows)} unnamed leads since {since}; {sum(1 for r in rows if ppl.get(r["email"]))} have people on record; '
           f'{len(done)} get a name')
     for k, v in by_src.most_common(15): print(f'  {v:6}  {k}')
     print('\n'.join('  ' + s for s in sample))
@@ -81,7 +99,7 @@ def ph_pages(since, apply, batch=150):
         for url, makers in found.items():
             for r in DB.execute("""select distinct l.email, l.website, l.company_domain from leads l join lead_sources s using (email)
                                    where s.source_ref = %s and s.source like '%%producthunt%%'""", (url,)).fetchall():
-                payload = json.dumps({'website': r['website'] or f"https://{r['company_domain']}", 'people': makers})
+                payload = json.dumps({'website': r['website'] if domain_of(r['website']) else '', 'people': makers})
                 DB.execute("""insert into lead_sources (email, source, source_ref, run_id, payload) values (%s, 'engine:ph-makers', %s, 'names.py', %s)
                               on conflict (email, source, source_ref) do update set payload = excluded.payload, received_at = now()""",
                            (r['email'], url, payload))

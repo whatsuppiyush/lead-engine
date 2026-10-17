@@ -297,7 +297,8 @@ def person_name(name, company='', email='', handles=(), trusted=False):
 def name_in_mailbox(name, email):
     """True when a part of the person's name (3+ letters) is in the mailbox name: mp.mapierce@ <- Matthew Pierce."""
     local = re.sub(r'[^a-z]', '', (email or '').split('@')[0].lower())
-    return bool(local) and not is_role(email or '') and any(len(t) >= 3 and t in local for t in clean_name(name))
+    toks = clean_name(name)   # a first name counts from 3 letters; a surname from 4 ('ali@' is not proof of 'Shahmeer Ali')
+    return bool(local) and not is_role(email or '') and any(len(t) >= (3 if k == 0 else 4) and t in local for k, t in enumerate(toks))
 
 
 FREE_MAIL = {'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com',
