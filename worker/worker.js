@@ -5,6 +5,7 @@
 // It also starts the daily run: the 11:30 UTC timer dispatches sync.yml, the 11:50 one dispatches again if nothing started.
 //   POST /daily-status  (same bearer)  -> whether today's run has started, without starting anything
 //   POST /morning-report  (same bearer)  {"send": true} -> the 09:00 IST Telegram report (no body = preview only)
+//   POST /ph-makers     (same bearer)  {"urls": [PH product pages, max 15]} -> each product's makers [{name, username, headline}]
 //   POST /dispatch      (same bearer)  {"task": "producthunt", "args": "--day 2026-10-12"} -> starts one run (one at a time!)
 import { buildReport, sendTelegram } from './report.js';
 
@@ -54,6 +55,50 @@ export default {
       const { task, args, limit } = await req.json().catch(() => ({}));
       try { await dispatch(env, task || 'daily', args || '', limit || ''); return Response.json({ dispatched: task || 'daily' }); }
       catch (e) { return Response.json({ error: String(e) }, { status: 502 }); }
+    }
+    if (new URL(req.url).pathname === '/ph-makers') {
+      // The PH API redacts ~45% of maker names; the public /products/<slug>/makers page carries them all.
+      // A stored launch slug (/products/steve-ai-3-0) 404s: /posts/<slug> redirects to the real product first.
+      const { urls: pages } = await req.json().catch(() => ({}));
+      if (!Array.isArray(pages) || !pages.length || pages.length > 15) return Response.json({ error: 'urls: 1-15' }, { status: 400 });
+      const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36';
+      const get = async (url) => {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const r = await fetch(url, { headers: { 'user-agent': UA, accept: 'text/html' } });
+          if (r.status === 429 && attempt < 2) { await new Promise((s) => setTimeout(s, 1500 * (attempt + 1))); continue; }
+          return r;
+        }
+      };
+      const page = async (url) => {
+        const m = /^https:\/\/www\.producthunt\.com\/(?:products|posts)\/([\w.-]+)/.exec(url || '');
+        if (!m) return { url, status: 400, makers: [] };
+        try {
+          let r = await get(`https://www.producthunt.com/products/${m[1]}/makers`);
+          if (r.status === 404) {
+            const p = await get(`https://www.producthunt.com/posts/${m[1]}`);
+            const slug = /\/products\/([\w.-]+)/.exec(p.url || '');
+            if (slug) r = await get(`https://www.producthunt.com/products/${slug[1]}/makers`);
+          }
+          if (!r.ok) return { url, status: r.status, makers: [] };
+          const html = await r.text();
+          // "makers":[User...] on a launch page, "makers":{"edges":[{"node":User}]} on /makers; match brackets outside strings
+          const i = html.indexOf('"makers":');
+          if (i < 0) return { url, status: r.status, makers: [] };
+          let depth = 0, j = i + 9, inStr = false;
+          for (; j < html.length; j++) {
+            const c = html[j];
+            if (inStr) { if (c === '\\') j++; else if (c === '"') inStr = false; continue; }
+            if (c === '"') inStr = true; else if (c === '[' || c === '{') depth++; else if ((c === ']' || c === '}') && --depth === 0) break;
+          }
+          const v = JSON.parse(html.slice(i + 9, j + 1));
+          const users = Array.isArray(v) ? v : (v.edges || []).map((e) => e.node);
+          const makers = users.filter(Boolean).map((x) => ({ name: x.name, username: x.username, headline: x.headline }));
+          return { url, status: r.status, makers };
+        } catch (e) { return { url, status: 0, makers: [], error: String(e) }; }
+      };
+      const results = [];
+      for (let i = 0; i < pages.length; i += 5) results.push(...await Promise.all(pages.slice(i, i + 5).map(page)));
+      return Response.json({ results });
     }
     const { urls } = await req.json().catch(() => ({}));
     if (!Array.isArray(urls) || !urls.length || urls.length > 40) return Response.json({ error: 'urls: 1-40' }, { status: 400 });

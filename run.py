@@ -1,7 +1,7 @@
 """Entry point."""
 import argparse, collections, concurrent.futures as cf, json, sys
 import core
-from core import DB, Verifier, crawl, domain_of, fit, guesses, is_role, known, on_producthunt, save_company, save_lead
+from core import DB, Verifier, crawl, domain_of, fit, guesses, is_role, known, name_for, on_producthunt, person_name, save_company, save_lead
 from sources import SOURCES
 
 BIG_DR = 70           # authority this high = established company, not our buyer
@@ -45,7 +45,8 @@ def process(list_, items, run_id, dry=False):
         d = it['domain']
         if not d or d in seen: continue
         seen.add(d)
-        base = {'domain': d, 'name': it.get('name'), 'lists': [list_], 'topics': [t for t in it.get('topics') or [] if t],
+        # a source can file its companies under a shared list too (marketingdb -> launches), keeping its own tag
+        base = {'domain': d, 'name': it.get('name'), 'lists': list(dict.fromkeys([list_, it.get('list') or list_])), 'topics': [t for t in it.get('topics') or [] if t],
                 'signals': {**(it.get('signals') or {}),
                             'makers': [{k: p.get(k) for k in ('name', 'x', 'linkedin', 'title') if p.get(k)}
                                        for p in (it.get('people') or []) if p.get('name') not in (None, '', '[REDACTED]')]},
@@ -57,13 +58,19 @@ def process(list_, items, run_id, dry=False):
             # a listing that names its submitter is a person we may not hold yet, even when the company is known
             owners = [e.lower() for e in it.get('emails') or []] if it.get('_owner_email') else []
             have = {r['email'] for r in DB.execute('select email from leads where email = any(%s)', (owners,)).fetchall()} if owners else set()
+            if it.get('people'):   # name the addresses we already hold for this company from who this source lists; never overwrite
+                for r in DB.execute('select email from leads where company_domain = %s and first_name is null', (d,)).fetchall():
+                    f_, l_ = name_for(r['email'], it['people'], it.get('name'))
+                    if f_: st['names_filled'] += DB.execute('''update leads set first_name = %s, last_name = coalesce(last_name, nullif(%s, ''))
+                                                               where email = %s and first_name is null''', (f_, l_, r['email'])).rowcount
             for e in [e for e in owners if e not in have]:
                 res = ver.check(e.split('@')[1], [e], stop_at_first=False)[0]
                 if res.get(e) == 'invalid': continue
                 st_ = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
                 x = next((p.get('x') for p in it.get('people') or [] if p.get('x')), '') or ''
-                products, why = fit([list_], base['topics'], dr.get(d), base['signals'], d in ph)
-                save_lead({'email': e, 'first_name': None, 'last_name': None, 'company': it.get('name'), 'website': it.get('website'),
+                products, why = fit(base['lists'], base['topics'], dr.get(d), base['signals'], d in ph)
+                mf, ml = name_for(e, it.get('people'), it.get('name'))
+                save_lead({'email': e, 'first_name': mf or None, 'last_name': ml or None, 'company': it.get('name'), 'website': it.get('website'),
                            'domain': d, 'title': None, 'linkedin': None, 'x': x.rstrip('/').split('/')[-1] or None,
                            'audience': 'B2B founders', 'status': st_, 'fit': products, 'fit_reason': why,
                            'contact_type': 'company' if is_role(e) else 'founder', 'origin': 'listed',
@@ -76,6 +83,9 @@ def process(list_, items, run_id, dry=False):
             st['skipped_big'] += 1; continue
 
         listed, socials = crawled.get(d) or crawl(it['website'])
+        # founders the site itself declares (schema.org) join the people this source listed
+        known_names = {(p.get('name') or '').lower() for p in it.get('people') or []}
+        it['people'] = (it.get('people') or []) + [p for p in core.SITE_PEOPLE.get(d, []) if p['name'].lower() not in known_names]
         listed = list(dict.fromkeys([e.lower() for e in it.get('emails') or []] + listed))
         people = [p for p in (it.get('people') or []) if p.get('name') and p['name'] != '[REDACTED]'][:MAX_PEOPLE]
         contacts, ca, used = [], None, set()
@@ -107,13 +117,17 @@ def process(list_, items, run_id, dry=False):
             for e in published:
                 if res.get(e) == 'invalid': continue
                 st_ = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
-                owner = next((p for p in it.get('people') or [] if p.get('x')), {}) if e in given else {}
-                contacts.append(({'name': '', 'x': owner.get('x')}, e, st_, 'listed'))
-        products, why = fit([list_], base['topics'], dr.get(d), base['signals'], d in ph)
+                # a listing's own submitter address belongs to its named maker (a person name only, never a brand)
+                owner = next((p for p in it.get('people') or [] if p.get('name') or p.get('x')), {}) \
+                    if (e in given and it.get('_owner_email')) else {}
+                contacts.append(({'name': owner.get('name') or '', 'x': owner.get('x')}, e, st_, 'listed'))
+        products, why = fit(base['lists'], base['topics'], dr.get(d), base['signals'], d in ph)
         save_company({**base, 'lookup_at': 'now', 'catch_all': ca,
                       'lookup_result': 'found' if contacts else ('catch_all' if ca else 'none')}, run_id)
         for p, email, status, origin in contacts:
-            f, l = split(p.get('name'))
+            # the person this address was guessed for, else the shared rule (mailbox match, shared inbox -> founder, solo founder)
+            f, l = person_name(p.get('name'), it.get('name'), email, [p.get(k) for k in ('x', 'ph', 'hn', 'linkedin') if p.get(k)])
+            if not f: f, l = name_for(email, it.get('people'), it.get('name'))
             x = (p.get('x') or '').rstrip('/').split('/')[-1].lstrip('@')
             save_lead({'email': email, 'first_name': f or None, 'last_name': l or None, 'company': it.get('name'),
                        'website': it.get('website'), 'domain': d, 'title': p.get('title') or None,

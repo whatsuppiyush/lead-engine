@@ -15,6 +15,7 @@ def todo(signal, limit):
     return DB.execute("""
       select c.domain, c.name, c.lists, c.topics, c.signals from companies c
       where c.signals ? %s and not exists (select 1 from leads l where l.company_domain = c.domain)
+        and coalesce((c.signals->>'outscraper_at')::timestamptz, 'epoch') < now() - interval '90 days'   -- asked recently: skip
       order by c.first_seen_at desc limit %s""", (signal, limit)).fetchall()
 
 
@@ -75,7 +76,7 @@ def run(signal, limit, apply, max_usd, per_company=2):
                 if res.get(e) == 'invalid': continue
                 status = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
                 name, title = found[e]
-                first, _, last = name.strip().partition(' ')
+                first, last = core.person_name(name, r['name'], e)   # Outscraper names can be brands too
                 products, why = core.fit(r['lists'] or [], r['topics'] or [], None, r['signals'] or {}, False)
                 save_lead({'email': e, 'first_name': first or None, 'last_name': last or None, 'company': r['name'],
                            'website': f'https://{d}', 'domain': d, 'title': title or None, 'linkedin': None,
@@ -85,7 +86,8 @@ def run(signal, limit, apply, max_usd, per_company=2):
                           'engine:outscraper', d, {'outscraper': found[e], 'signal': signal}, run_id)
                 saved += 1; st['leads'] += 1; st[f'lead:{status}'] = st.get(f'lead:{status}', 0) + 1
             st['with_contact'] += bool(saved)
-            DB.execute("update companies set email_lookup_at = now(), email_lookup_result = %s where domain = %s",
+            DB.execute("""update companies set email_lookup_at = now(), email_lookup_result = %s,
+                          signals = coalesce(signals, '{}') || jsonb_build_object('outscraper_at', now()::text) where domain = %s""",
                        ('found' if saved else 'none', d))
             print(f"  {d}: {len(found or {})} from outscraper, {saved} saved", flush=True)
     finally:

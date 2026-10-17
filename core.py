@@ -97,6 +97,71 @@ def resolve_ph_links(urls):
     return out
 
 
+def _ph_makers_html(page):
+    """The makers in a PH page: "makers":[User] on a launch page, "makers":{"edges":[{"node":User}]} on /makers."""
+    i = page.find('"makers":')
+    if i < 0: return []
+    try: v, _ = json.JSONDecoder().raw_decode(page, i + 9)
+    except ValueError: return []
+    users = v if isinstance(v, list) else [e.get('node') for e in (v or {}).get('edges') or [] if isinstance(e, dict)]
+    return [{'name': u.get('name') or '', 'ph': u.get('username') or '', 'title': u.get('headline') or ''} for u in users if isinstance(u, dict)]
+
+
+def ph_makers_direct(url, tries=6):
+    """One product's makers fetched from this machine (PH answers home connections; datacenters get 403). Paced by the
+    caller; backs off on 429. A stored launch slug that 404s resolves through /posts/<slug>. -> list, [] or None (gave up)."""
+    slug = re.search(r'/(?:products|posts)/([\w.-]+)', url or '')
+    if not slug: return []
+    def get(u):
+        for n in range(tries):
+            try:
+                r = urllib.request.urlopen(urllib.request.Request(u, headers={'User-Agent': UA, 'Accept': 'text/html'}), timeout=30)
+                return r.status, r.geturl(), r.read(2_000_000).decode('utf-8', 'ignore')
+            except urllib.error.HTTPError as e:
+                if e.code == 429: time.sleep(min(120, int(e.headers.get('Retry-After') or 0) or 10 * 2 ** n)); continue
+                return e.code, u, ''
+            except Exception:
+                time.sleep(5)
+        return 429, u, ''
+    code, _, page = get(f'https://www.producthunt.com/products/{slug[1]}/makers')
+    if code == 404:
+        _, final, _ = get(f'https://www.producthunt.com/posts/{slug[1]}')
+        real = re.search(r'/products/([\w.-]+)', final or '')
+        if real: code, _, page = get(f'https://www.producthunt.com/products/{real[1]}/makers')
+    if code == 429: return None
+    return _ph_makers_html(page) if code == 200 else []
+
+
+def ph_makers(urls):
+    """{PH product url: [{name, ph, title}]} from the public makers page, through the ph-resolve Worker (PH blocks
+    datacenter IPs; the Worker runs on Cloudflare). The PH API redacts ~45% of maker names; these pages don't.
+    Pages the Worker gets rate-limited on are retried after a pause."""
+    out = {}
+    if not ENV.get('PH_RESOLVER_URL'): return out
+    base = ENV['PH_RESOLVER_URL'].rstrip('/') + '/ph-makers'
+    for i in range(0, len(urls), 15):
+        body = json.dumps({'urls': urls[i:i + 15]}).encode()
+        for attempt in range(3):
+            try:
+                res = json.load(urllib.request.urlopen(urllib.request.Request(base, body, {
+                    'Authorization': f"Bearer {ENV['PH_RESOLVER_SECRET']}", 'Content-Type': 'application/json',
+                    'User-Agent': 'pp-daily-sync/1.0'}), timeout=180))['results']
+                break
+            except Exception as e:
+                res = []; print('  ph-makers worker call failed:', e); time.sleep(5 * (attempt + 1))
+        for r in res:
+            if r.get('makers'):
+                out[r['url']] = [{'name': m.get('name') or '', 'ph': m.get('username') or '', 'title': m.get('headline') or ''}
+                                 for m in r['makers']]
+        limited = [r['url'] for r in res if r.get('status') == 429]
+        if limited and not getattr(ph_makers, '_retrying', False):   # one slower retry for the rate-limited ones
+            time.sleep(30); ph_makers._retrying = True
+            try: out.update(ph_makers(limited))
+            finally: ph_makers._retrying = False
+        time.sleep(2)
+    return out
+
+
 def resolve_redirect(url, tries=4):
     """Product Hunt's /r/ tracking link: a HEAD request answers 301 with the real site in Location.
     A full GET gets rate-limited (429), so never follow it; back off on 429."""
@@ -128,8 +193,35 @@ ROLE = set('info hello contact support team admin sales hi help office enquiries
            'bookings request requests apps product products contacto kontakt bonjour hola ai dpo official destek hallo halo main data'.split())
 
 
+SITE_PEOPLE = {}   # domain -> people the site itself names as founder/CEO (filled by crawl, read by run.process)
+
+
+def site_people(page):
+    """People a page declares in its structured data: schema.org founder(s), or a Person whose jobTitle says
+    founder/CEO/owner. Reliable when present (the site wrote it for Google), so no guessing from prose."""
+    out = []
+    def walk(v, key=''):
+        if isinstance(v, list):
+            for x in v: walk(x, key)
+        elif isinstance(v, dict):
+            t = v.get('@type'); t = t if isinstance(t, str) else ' '.join(t or [])
+            if 'Person' in t and isinstance(v.get('name'), str) and (key in ('founder', 'founders') or
+                                                                     FOUNDER_TITLE.search(str(v.get('jobTitle') or ''))):
+                out.append({'name': v['name'], 'title': str(v.get('jobTitle') or ('Founder' if key.startswith('founder') else '')),
+                            'linkedin': next((u for u in (v.get('sameAs') or []) if isinstance(u, str) and '/in/' in u), '')
+                            if isinstance(v.get('sameAs'), list) else '', 'site': True})
+            for k, x in v.items(): walk(x, k)
+        elif isinstance(v, str) and key in ('founder', 'founders') and v.strip():
+            out.append({'name': v.strip(), 'title': 'Founder', 'site': True})
+    for m in re.finditer(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', page, re.S | re.I):
+        try: walk(json.loads(m.group(1).strip()))
+        except ValueError: pass
+    return out
+
+
 def crawl(website, max_pages=6):
-    """Fetch up to 6 pages of the site, return emails (on-domain first) and social links. Free."""
+    """Fetch up to 6 pages of the site, return emails (on-domain first) and social links. Free.
+    Founders the site declares in its structured data land in SITE_PEOPLE[domain] as a side effect."""
     dom = domain_of(website)
     base = f'https://{dom}' if dom else ''
     emails, socials = {}, set()
@@ -140,6 +232,10 @@ def crawl(website, max_pages=6):
         if not page:
             if i == 0: return [], []          # homepage unreachable: don't hammer the rest
             continue
+        found = site_people(page)
+        if found:
+            have = {x['name'].lower() for x in SITE_PEOPLE.get(dom, [])}
+            SITE_PEOPLE[dom] = SITE_PEOPLE.get(dom, []) + [x for x in found if x['name'].lower() not in have]
         txt = html.unescape(page)
         for e in EMAIL_RX.findall(txt):
             e = e.lower().strip('.')
@@ -164,6 +260,90 @@ def guesses(name, dom):
     out = [f'{f}@{dom}']
     if l: out += [f'{f}.{l}@{dom}', f'{f[0]}{l}@{dom}', f'{f}{l}@{dom}', f'{f[0]}.{l}@{dom}']
     return out
+
+
+NOT_A_PERSON = re.compile(r'\b(inc|llc|ltd|limited|gmbh|labs?|studios?|team|hq|app|apps|ai|io|official|agency|media|'
+                          r'software|technologies|tech|solutions|digital|group|co|corp|company|admin|support|marketing|tools?|games?|dev|hub|'
+                          r'bot|seo|saas|shop|store|user|admin|anonymous|unknown|growth\w*|\w*labs?|automobiles?|intellect|hacks?|directories|rank|launch\w*|keys|ventures?|consulting|services?|trading|forms?)\b', re.I)
+TITLES = {'md', 'mr', 'mrs', 'ms', 'dr', 'prof', 'mohd', 'muhammad'}
+PARTICLES = {'van', 'der', 'de', 'la', 'von', 'da', 'del', 'di', 'le', 'bin', 'al'}
+
+
+def person_name(name, company='', email='', handles=(), trusted=False):
+    """A display name -> (first, last) when it reads like a person, else ('', ''). Display names are often a brand
+    ('GenWave LLC', 'SVGMaker') or carry a tagline ('Karuna · building in public'); a wrong first name in an opener is
+    worse than none. One word only counts when the person's own mailbox or handle (X, PH, HN, LinkedIn) contains it."""
+    name = re.split(r'\s+[·|•–—(]\s*|\s+-\s+|,|\(', name or '')[0]
+    n = re.sub(r'[^\w\s\'.-]', ' ', name, flags=re.U).strip()
+    parts = [w for w in n.split() if not w.startswith('@')]
+    if not parts or len(parts) > 3 or NOT_A_PERSON.search(n) or any(ch.isdigit() for ch in n): return '', ''
+    if re.search(r'\.[a-z]{2,}\b', name, re.I): return '', ''     # a domain, not a person
+    co = re.sub(r'\W', '', company or '').lower()
+    if co and (re.sub(r'\W', '', n).lower() == co or any(len(w) >= 4 and w.lower() in co for w in parts)): return '', ''
+    while len(parts) > 2 and parts[0].lower().strip('.') in TITLES: parts = parts[1:]   # 'md anas saif' -> Anas; 'Mohd Khan' stays
+    if len(parts) == 1:   # one word is a brand more often than a person: no camelCase, no plural nouns, no long lowercase
+        w = parts[0]
+        if len(w) < 2 or re.search(r'[a-z][A-Z]', w) or re.search(r'(ers|ies|ly|ify)$', w.lower()) or w.islower() and len(w) > 12:
+            return '', ''
+        local, _, dom = (email or '').lower().partition('@')
+        if trusted: backing = [w.lower()]   # the source labels them the owner/founder (Yelp business_owner)
+        else: backing = [local] + [re.sub(r'.*/', '', (h or '').rstrip('/')).lower() for h in handles if h]
+        if not any(b and w.lower() in b for b in backing) or (dom and w.lower() in dom): return '', ''
+    if all(w.isupper() for w in parts if len(w) > 2): parts = [w.capitalize() for w in parts]   # BEKSULTAN -> Beksultan
+    cap = lambda w: w if w.lower() in PARTICLES or any(c.isupper() for c in w[1:]) else w[:1].upper() + w[1:]
+    return cap(parts[0]), ' '.join(cap(w) for w in parts[1:])
+
+
+def name_in_mailbox(name, email):
+    """True when a part of the person's name (3+ letters) is in the mailbox name: mp.mapierce@ <- Matthew Pierce."""
+    local = re.sub(r'[^a-z]', '', (email or '').split('@')[0].lower())
+    return bool(local) and not is_role(email or '') and any(len(t) >= 3 and t in local for t in clean_name(name))
+
+
+FREE_MAIL = {'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com',
+             'proton.me', 'protonmail.com', 'gmx.de', 'gmx.net', 'web.de', 'qq.com', '163.com', 'yandex.ru', 'mail.ru', 'aol.com',
+             'zoho.com', 'hey.com', 'pm.me', 'fastmail.com'}
+FOUNDER_TITLE = re.compile(r'found|ceo|owner|creator|maker|president|director', re.I)
+
+
+_SHARED = None
+
+
+def shared_makers():
+    """Names listed next to other makers on 2+ different companies: hunters, investors, agency staff, not the founder
+    to greet at a company's shared inbox. Solo founders of many products (always the only maker) are not in it."""
+    global _SHARED
+    if _SHARED is None:
+        _SHARED = {r['n'] for r in DB.execute("""
+          select lower(trim(m->>'name')) n from companies, jsonb_array_elements(signals->'makers') m
+          where jsonb_typeof(signals->'makers') = 'array' and jsonb_array_length(signals->'makers') > 1
+            and coalesce(m->>'name', '') <> '' group by 1 having count(distinct domain) >= 2""").fetchall()}
+    return _SHARED
+
+
+def name_for(email, people, company=''):
+    """The founder name to greet an address with, from the people a source listed for its company. -> (first, last).
+    1. a person whose name is in the mailbox (mp.mapierce@ <- Matthew Pierce)
+    2. a shared inbox (team@, support@, hello@) -> the primary founder: founder/CEO title first, else first listed
+    3. a free-mail address (gmail...) at a company that lists exactly one person -> that person (a solo founder)
+    3 applies to free-mail addresses only. Anything else stays blank: it may be someone else."""
+    named = []
+    for p in people or []:
+        hs = [p.get(k) for k in ('x', 'ph', 'hn', 'linkedin', 'handle', 'github') if p.get(k)]
+        f, l = person_name(p.get('name'), company, email, hs, bool(p.get('trusted')))
+        if f: named.append((f, l, p))
+    if not named: return '', ''
+    for f, l, p in named:
+        if name_in_mailbox(f'{f} {l}', email): return f, l
+    named = [x for x in named if (x[2].get('name') or '').strip().lower() not in shared_makers()]
+    if not named: return '', ''
+    if is_role(email):
+        f, l, _ = next((x for x in named if FOUNDER_TITLE.search(x[2].get('title') or '')), named[0])
+        return f, l
+    # a personal address on the company's own domain that doesn't carry their name is a different person (antonio@ != Pablo)
+    people_n = len({(p.get('name') or '').strip().lower() for p in people or [] if (p.get('name') or '').strip()})
+    if len(named) == 1 and people_n == 1 and email.split('@')[-1].lower() in FREE_MAIL: return named[0][0], named[0][1]
+    return '', ''
 
 
 def is_role(email):

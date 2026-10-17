@@ -96,6 +96,15 @@ def producthunt(run_id, day=None, limit=1000, min_votes=0):
         if not posts['pageInfo']['hasNextPage']: break
         cur = posts['pageInfo']['endCursor']; time.sleep(1)
     out = out[:limit]
+    # the API redacts ~45% of maker names: read those launches' makers off the public page (via our Worker)
+    from core import ph_makers
+    hidden = [it['ref'] for it in out if any(p['name'] in ('', '[REDACTED]') for p in it['people'])]
+    pages = ph_makers(hidden) if hidden else {}
+    for it in out:
+        if it['ref'] in pages:
+            xs = {p['ph']: p['x'] for p in it['people'] if p.get('ph') not in (None, '', '[REDACTED]')}
+            it['people'] = [{**m, 'x': xs.get(m['ph'], '')} for m in pages[it['ref']]]
+    if hidden: print(f'  ph makers: {len(hidden)} launches had hidden names, {len(pages)} filled from the page')
     from core import resolve_ph_links      # PH gives tracking links; resolve to the real site (free, via our Worker)
     sites = resolve_ph_links([it['website'] for it in out])
     for it in out:
@@ -313,7 +322,8 @@ def shopify_sitemap(run_id, limit=500, launched_days=None):
         cut = (datetime.date.today() - datetime.timedelta(days=int(launched_days))).isoformat()
         pages = [p for p in pages if (p['launched'] or '') >= cut]
     return [{'list': 'shopify', 'source': 'engine:shopify', 'ref': p['url'], 'name': p['brand'] or p['name'],
-             'website': p['website'], 'tagline': p['name'][:300], 'topics': ['e-commerce', 'shopify app'], 'people': [],
+             'website': p['website'], 'tagline': p['name'][:300], 'topics': ['e-commerce', 'shopify app'],
+             'people': [{'name': p['brand']}] if p.get('brand') else [],   # the developer; a company name gets filtered
              'emails': [p['email']] if p['email'] else [],
              'signals': {'reviews': p['reviews'], 'launched': p['launched'], 'app': p['name']},
              'launch_date': p['launched']} for p in pages]
@@ -461,7 +471,11 @@ def hiring(run_id, limit=300, query='marketing', location='', roles=''):
         locs = pick(i, 'locationNames', 'locations', default=[]) or []
         out.append({'list': 'hiring', 'source': 'engine:wellfound', 'ref': pick(i, 'companyPortalUrl', 'companyUrl', 'portalUrl') or site,
                     'name': pick(i, 'companyName', 'name'), 'website': site or '', 'tagline': (pick(i, 'companyTagline', 'companyHighConcept', 'tagline') or '')[:300],
-                    'topics': [x for x in (pick(i, 'companyMarkets', 'markets', default=[]) or []) if isinstance(x, str)], 'people': [],
+                    'topics': [x for x in (pick(i, 'companyMarkets', 'markets', default=[]) or []) if isinstance(x, str)],
+                    'people': [({'name': f, 'title': 'Founder', 'trusted': True} if isinstance(f, str) else
+                                {'name': pick(f, 'name', 'fullName', 'full_name'), 'title': pick(f, 'title', 'role') or 'Founder',
+                                 'linkedin': pick(f, 'linkedin', 'linkedinUrl', 'linkedInUrl'), 'trusted': True})
+                               for f in i.get('companyFounders') or [] if f],
                     'emails': [e.lower() for e in i.get('companyEmails') or [] if isinstance(e, str)],
                     'signals': {'hiring': True, 'hiring_for': query, 'jobs_open': pick(i, 'jobCount', default=None),
                                 'team_size': pick(i, 'companySizeLabel', 'companySize', default=None),
@@ -560,7 +574,8 @@ def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_
         out.append({'list': 'play', 'source': 'engine:play', 'ref': f"https://play.google.com/store/apps/details?id={a['appId']}",
                     'name': a.get('developer') or a.get('title'), 'website': a.get('developerWebsite') or '',
                     'tagline': (a.get('summary') or a.get('title') or '')[:300], 'topics': ['mobile app', a.get('genre') or ''],
-                    'people': [], 'emails': [a['developerEmail'].lower()] if a.get('developerEmail') else [],
+                    'people': [{'name': a['developer']}] if isinstance(a.get('developer'), str) else [],   # brand names get filtered
+                    'emails': [a['developerEmail'].lower()] if a.get('developerEmail') else [],
                     'signals': {'installs': inst, 'rating': a.get('score'), 'reviews': a.get('ratings'), 'app': a.get('title'),
                                 'genre': a.get('genre'), 'iap': a.get('offersIAP'), 'ads': a.get('containsAds'),
                                 'released': a.get('released')},
@@ -582,6 +597,26 @@ def _mdb_project(url):
     return row if isinstance(row, dict) and row.get('project_url') else None
 
 
+def _mdb_maker(url):
+    """A maker page's ProfilePage JSON-LD: the account's display name and the listings it launched."""
+    p = _paced_get(url)
+    for m in re.finditer(r'application/ld\+json">(.*?)</script>', p or '', re.S):
+        try: d = json.loads(m.group(1))
+        except ValueError: continue
+        if isinstance(d, dict) and d.get('@type') == 'ProfilePage':
+            items = (d.get('hasPart') or {}).get('itemListElement') or []
+            return (d.get('mainEntity') or {}).get('name'), url, [i.get('url') for i in items if i.get('url')]
+    return None
+
+
+def mdb_makers(only=None):
+    """{listing url: (maker name, maker page)} from every maker page, or only the makers of `only` listings' handles."""
+    urls = _sitemap_urls('https://marketingdb.live/sitemap/makers', r'<loc>(https://marketingdb\.live/@[^<]+)</loc>')
+    with cf.ThreadPoolExecutor(4) as ex:
+        res = [r for r in ex.map(_mdb_maker, urls) if r]
+    return {p: (n, u) for n, u, ps in res if n for p in ps}
+
+
 def marketingdb(run_id, limit=1000, weeks=None, refetch=0):
     """Every approved listing on marketingdb.live (a weekly launch directory, ~22 categories), via its project sitemaps.
     Free. Each listing exposes the submitter's own email and X handle. weeks=N keeps launches from the last N ISO weeks."""
@@ -591,11 +626,24 @@ def marketingdb(run_id, limit=1000, weeks=None, refetch=0):
         got = _sitemap_urls(f'https://marketingdb.live/sitemap/projects/{n}', r'<loc>(https://marketingdb\.live/project/[^<]+)</loc>')
         if not got: break
         urls += got
-    seen = set() if int(refetch) else _seen_refs('engine:marketingdb')   # refetch=1 revisits every listing (one-off backfills)
+    # a listing counts as seen once a run has saved its company, contact or not (refetch=1 revisits all, for backfills)
+    from core import DB
+    seen = set() if int(refetch) else _seen_refs('engine:marketingdb') | {r['u'] for r in DB.execute(
+        "select signals->>'mdb_listing' u from companies where signals ? 'mdb_listing'").fetchall()}
     todo = [u for u in dict.fromkeys(urls) if u not in seen][:int(limit)]
     print(f'  marketingdb: {len(urls)} listings, {len(seen)} seen, fetching {len(todo)}')
     with cf.ThreadPoolExecutor(4) as ex:
         rows = [(u, r) for u, r in zip(todo, ex.map(_mdb_project, todo)) if r]
+    from core import person_name, is_role
+    makers = mdb_makers() if rows else {}     # the founder's real name lives on their maker page, not the listing
+    # the maker sitemap misses some makers; a handle is the submitter's mailbox name, so try /@<local part> and keep
+    # the name only when that page lists this very listing
+    miss = {u: (r.get('user_email') or '').split('@')[0] for u, r in rows if u not in makers and '@' in (r.get('user_email') or '')}
+    with cf.ThreadPoolExecutor(4) as ex:
+        for u, got in zip(miss, ex.map(lambda h: _mdb_maker(f'https://marketingdb.live/@{h}'), miss.values())):
+            # a page that lists no launches is still theirs, unless the handle is a shared inbox name others may hold
+            if got and got[0] and (u in got[2] or (not got[2] and not is_role(miss[u] + '@x'))): makers[u] = (got[0], got[1])
+    print(f'  marketingdb: maker names for {sum(1 for u, _ in rows if u in makers)} of {len(rows)} listings')
     out = []
     for u, r in rows:
         day = (r.get('approved_at') or r.get('created_at') or '')[:10]
@@ -606,11 +654,12 @@ def marketingdb(run_id, limit=1000, weeks=None, refetch=0):
         out.append({'list': 'launches', 'source': 'engine:marketingdb', 'ref': u, 'name': r.get('project_name'),
                     'website': r.get('project_url'), 'tagline': (r.get('tagline') or r.get('description') or '')[:300],
                     'topics': [t for t in [r.get('category')] + (r.get('tags') or []) if t],
-                    'people': [{'name': '', 'x': f'https://x.com/{x}'}] if x else [],
+                    'people': [{'name': ' '.join(person_name(mk[0], r.get('project_name'), email)).strip(), 'maker_name': mk[0],
+                                'maker_page': mk[1], 'x': f'https://x.com/{x}' if x else ''}] if (mk := makers.get(u, ('', ''))) != ('', '') or x else [],
                     'emails': [email] if '@' in email else [], '_owner_email': True,
-                    'signals': {'mdb_category': r.get('category'), 'mdb_week': f'{y}-W{w:02d}' if w else None,
+                    'signals': {'mdb_listing': u, 'mdb_category': r.get('category'), 'mdb_week': f'{y}-W{w:02d}' if w else None,
                                 'mdb_upvotes': r.get('upvotes'), 'mdb_views': r.get('views'), 'mdb_plan': r.get('launch_plan'),
-                                'pricing': r.get('pricing'), 'x': x or None},
+                                'pricing': r.get('pricing'), 'x': x or None, 'maker': (makers.get(u) or [None])[0]},
                     'launch_date': day or None})
     print(f"  marketingdb: {len(rows)} parsed, {sum(1 for o in out if o['emails'])} with a submitter email")
     return out

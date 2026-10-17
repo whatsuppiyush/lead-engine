@@ -8,8 +8,8 @@ Every business lands in yelp_businesses (one row per Yelp id). first_seen_at is 
 the closest we get to "newly listed": Yelp does not publish a listing date and blocks its Hot & New pages.
 Emails found on the website also go to leads (source engine:yelp) so Reoon checks them like everything else.
 """
-import argparse, concurrent.futures as cf, json
-from core import DB, crawl, domain_of, is_role, save_company, save_lead, start_run, finish_run
+import argparse, concurrent.futures as cf, json, re
+from core import DB, crawl, domain_of, is_role, name_for, save_company, save_lead, start_run, finish_run
 from sources import apify
 
 # daily rotation: each day the searches run longest ago go first (Tier 1 local businesses, fast-growing US metros)
@@ -50,6 +50,19 @@ def own_emails(site, found):
     return list(dict.fromkeys(keep))[:3]
 
 
+def yelp_owner(fb):
+    """The owner Yelp shows under 'About the business': {'name': 'Tyson K.', 'role': 'business_owner', 'bio': 'Tyson Kearns,
+    owner and CEO...'}. The bio usually spells the surname the card abbreviates; take it from there when it agrees."""
+    rep = (fb or {}).get('representative') or {}
+    name, bio = (rep.get('name') or '').strip(), rep.get('bio') or ''
+    if not name or rep.get('role') not in ('business_owner', 'business_manager', None): return None
+    first, _, rest = name.partition(' ')
+    m = re.match(rf"\s*{re.escape(first)}\s+([A-Z][a-zA-Z'-]+)", bio, re.I) if first else None
+    if m and rest and m.group(1)[0].lower() == rest[0].lower(): name = f'{first} {m.group(1)}'
+    elif rest.endswith('.') and len(rest) <= 2: name = first          # 'Neal K.' -> 'Neal' when the bio doesn't say
+    return {'name': name, 'title': 'Owner' if rep.get('role') == 'business_owner' else 'Manager', 'trusted': True}
+
+
 def run(queries, locations, limit, from_file=None, pairs=None):
     run_id = start_run('yelp', 'yelp')
     stats = {'items': 0, 'new': 0, 'with_phone': 0, 'with_website': 0, 'with_email': 0, 'advertisers': 0}
@@ -82,7 +95,7 @@ def run(queries, locations, limit, from_file=None, pairs=None):
                        'chain': bool(i.get('is_chain_business')), 'closed': bool(i.get('is_closed')),
                        'msg': bool(i.get('is_message_to_business_enabled')),
                        'rt': (i.get('message_the_business') or {}).get('response_time'),
-                       'url': (i.get('share_url') or '').split('?')[0], 'raw': json.dumps({'year_established': fb.get('year_established')}),
+                       'url': (i.get('share_url') or '').split('?')[0], 'raw': json.dumps({'year_established': fb.get('year_established'), 'owner': yelp_owner(fb)}),
                        'ye': int(fb['year_established']) if str(fb.get('year_established') or '').isdigit() else None,
                        'tz': i.get('timezone'), 'hours': json.dumps(i.get('localized_hours') or i.get('hours')) if (i.get('localized_hours') or i.get('hours')) else None,
                        'photos': i.get('photo_count'),
@@ -112,18 +125,54 @@ def run(queries, locations, limit, from_file=None, pairs=None):
                                   'signals': {'yelp_rating': row['rating'], 'yelp_reviews': row['reviews'], 'yelp_advertiser': row['adv'],
                                               'city': row['city'], 'country': row['country']},
                                   'dr': None, 'lookup_at': 'now', 'lookup_result': 'found', 'catch_all': None, 'title': None}, run_id)
+                owner = yelp_owner(fb)
                 for e in (emails if row['domain'] else []):
-                    save_lead({'email': e, 'first_name': None, 'last_name': None, 'company': row['name'], 'website': site,
-                               'domain': row['domain'] or e.split('@')[1], 'title': None, 'linkedin': None, 'x': None,
+                    of, ol = name_for(e, [owner] if owner else [], row['name'])   # the owner Yelp lists; shared inboxes too
+                    save_lead({'email': e, 'first_name': of or None, 'last_name': ol or None, 'company': row['name'], 'website': site,
+                               'domain': row['domain'] or e.split('@')[1], 'title': (owner or {}).get('title') if of else None, 'linkedin': None, 'x': None,
                                'audience': 'Local businesses', 'status': 'role' if is_role(e) else 'unverified', 'fit': [],
                                'fit_reason': None, 'contact_type': 'company' if is_role(e) else 'founder', 'origin': 'listed',
                                'email_type': 'role inbox' if is_role(e) else 'listed on website', 'launch_date': None, 'tagline': None},
-                              'engine:yelp', row['url'], {'yelp_id': i['id'], 'phone': row['phone'], 'query': q, 'location': loc}, run_id)
+                              'engine:yelp', row['url'], {'yelp_id': i['id'], 'phone': row['phone'], 'query': q, 'location': loc,
+                               'website': site, 'people': [owner] if owner else []}, run_id)
             DB.execute("""insert into yelp_searches values (%s, %s, now(), %s) on conflict (query, location)
                           do update set last_run_at = now(), businesses = excluded.businesses""", (q, loc, len(items)))
             print(f'  {q} in {loc}: {len(items)} businesses, {len(items) - len(known)} new', flush=True)
     finish_run(run_id, stats)
     print(json.dumps(stats))
+
+
+def backfill_owners(max_runs=200):
+    """Owner names for businesses already stored, read back from the Apify runs that scraped them (no new scraping).
+    Fills yelp_businesses.raw.owner and the first name on their leads, never overwriting one."""
+    import urllib.request
+    from sources import _tokens
+    owners = {}
+    for tok in _tokens():
+        try:
+            runs = json.load(urllib.request.urlopen(f'https://api.apify.com/v2/acts/api-ninja~yelp-ultimate-scraper/runs?token={tok}'
+                                                    f'&desc=1&limit={max_runs}&status=SUCCEEDED', timeout=60))['data']['items']
+        except Exception as e:
+            print('  apify runs:', e); continue
+        for r in runs:
+            try:
+                items = json.load(urllib.request.urlopen(f"https://api.apify.com/v2/datasets/{r['defaultDatasetId']}/items?token={tok}"
+                                                         f"&clean=1&fields=id,from_this_business", timeout=120))
+            except Exception:
+                continue                   # dataset expired
+            for i in items:
+                o = yelp_owner(i.get('from_this_business'))
+                if i.get('id') and o: owners[i['id']] = o
+    print(f'  {len(owners)} Yelp businesses with an owner name in past runs')
+    named = 0
+    for yid, o in owners.items():
+        b = DB.execute("update yelp_businesses set raw = coalesce(raw, '{}')::jsonb || jsonb_build_object('owner', %s::jsonb) "
+                       "where yelp_id = %s returning name, emails", (json.dumps(o), yid)).fetchone()
+        for e in (b or {}).get('emails') or []:
+            f, l = name_for(e, [o], b['name'])
+            if f: named += DB.execute("update leads set first_name = %s, last_name = coalesce(last_name, nullif(%s, '')), "
+                                      "title = coalesce(title, %s) where email = %s and first_name is null", (f, l, o['title'], e)).rowcount
+    print(f'  named {named} Yelp leads')
 
 
 if __name__ == '__main__':
@@ -133,7 +182,9 @@ if __name__ == '__main__':
     ap.add_argument('--location', default='', help='semicolon-separated, e.g. "Austin, TX;Miami, FL"')
     ap.add_argument('--limit', type=int, default=40, help='businesses per search (Yelp stops around 240)')
     ap.add_argument('--from-file', help='load a saved actor result instead of scraping')
+    ap.add_argument('--owners', action='store_true', help='backfill owner names from past Apify runs, then exit')
     a = ap.parse_args()
+    if a.owners: backfill_owners(); raise SystemExit
     # GitHub passes args without quotes, so "_" stands for a space and "/" separates locations: Austin,_TX/Dallas,_TX
     q = [x.replace('_', ' ').strip() for x in a.query.split(',') if x.strip()]
     locs = [x.replace('_', ' ').strip() for x in a.location.replace('/', ';').split(';') if x.strip()]

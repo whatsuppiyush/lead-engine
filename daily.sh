@@ -23,6 +23,7 @@ dom=$(date +%d)
   [[ $dom == 01 ]] && $PY run.py funded --limit 200
   $PY yelp.py --rotate 2 --limit 40      # 2 category x city searches a day, ~\$0.45 of Apify
   $PY verify.py
+  $PY names.py --apply                   # founder names from every source's records onto unnamed leads (DB only)
   $PY run.py retag
   $PY push_lists.py
   $PY report.py
