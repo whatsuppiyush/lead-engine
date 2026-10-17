@@ -5,7 +5,7 @@ HERE = pathlib.Path(__file__).parent
 # secrets: .env locally, environment variables in CI (GitHub Actions)
 ENV = {k: v for k, v in os.environ.items() if k in ('DATABASE_URL', 'APIFY_TOKEN', 'REOON_API_KEY', 'PH_TOKEN',
                                                       'INSTANTLY_API_KEY', 'AZURE_CHAT_KEY', 'PH_RESOLVER_URL', 'PH_RESOLVER_SECRET', 'TELEGRAM_BOT_TOKEN',
-                                                      'TELEGRAM_CHAT_ID', 'GUMLOOP_API_KEY', 'GUMLOOP_USER_ID', 'GUMLOOP_AGENT_ID', 'APIFY_TOKENS', 'GITHUB_TOKEN', 'GITHUB_REPOSITORY')}
+                                                      'TELEGRAM_CHAT_ID', 'GUMLOOP_API_KEY', 'GUMLOOP_USER_ID', 'GUMLOOP_AGENT_ID', 'APIFY_TOKENS', 'GITHUB_TOKEN', 'GITHUB_REPOSITORY', 'OUTSCRAPER_API_KEY')}
 if (HERE / '.env').exists():
     ENV = {**{k: v.strip().strip('"') for k, v in (l.strip().split('=', 1) for l in open(HERE / '.env')
                                                    if '=' in l and not l.startswith('#'))}, **ENV}
@@ -17,18 +17,20 @@ import psycopg                       # noqa: E402
 from psycopg.rows import dict_row    # noqa: E402
 
 class _DB:
-    """Neon closes idle connections; reconnect once and retry instead of failing a long run."""
+    """Neon closes idle connections, and a laptop drops DNS for minutes after sleep: reconnect with backoff
+    (about 5 minutes in total) instead of failing a long run."""
     conn = None
 
     def execute(self, *a):
-        for attempt in (1, 2):
+        for attempt in range(7):
             try:
                 if self.conn is None or self.conn.closed:
                     self.conn = psycopg.connect(ENV['DATABASE_URL'], autocommit=True, row_factory=dict_row)
                 return self.conn.execute(*a)
             except psycopg.OperationalError:
                 self.conn = None
-                if attempt == 2: raise
+                if attempt == 6: raise
+                time.sleep(min(90, 5 * 2 ** attempt))
 
 
 DB = _DB()

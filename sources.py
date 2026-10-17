@@ -569,8 +569,55 @@ def play(run_id, limit=300, queries=None, min_installs=1000, max_installs=1_000_
     return out[:int(limit)]
 
 
+def _mdb_project(url):
+    """One MarketingDB listing. The page's RSC payload carries the whole DB row, including the submitter's email."""
+    p = _paced_get(url)
+    rsc = ''.join(json.loads('"' + s + '"') for s in re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', p, re.S)) if p else ''
+    i = rsc.find('"project":{')
+    if i < 0: return None
+    try:
+        row, _ = json.JSONDecoder().raw_decode(rsc, i + len('"project":'))
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) and row.get('project_url') else None
+
+
+def marketingdb(run_id, limit=1000, weeks=None, refetch=0):
+    """Every approved listing on marketingdb.live (a weekly launch directory, ~22 categories), via its project sitemaps.
+    Free. Each listing exposes the submitter's own email and X handle. weeks=N keeps launches from the last N ISO weeks."""
+    import datetime
+    urls = []
+    for n in range(20):                      # sitemap/projects/0..N, 200 per shard; stop at the first empty one
+        got = _sitemap_urls(f'https://marketingdb.live/sitemap/projects/{n}', r'<loc>(https://marketingdb\.live/project/[^<]+)</loc>')
+        if not got: break
+        urls += got
+    seen = set() if int(refetch) else _seen_refs('engine:marketingdb')   # refetch=1 revisits every listing (one-off backfills)
+    todo = [u for u in dict.fromkeys(urls) if u not in seen][:int(limit)]
+    print(f'  marketingdb: {len(urls)} listings, {len(seen)} seen, fetching {len(todo)}')
+    with cf.ThreadPoolExecutor(4) as ex:
+        rows = [(u, r) for u, r in zip(todo, ex.map(_mdb_project, todo)) if r]
+    out = []
+    for u, r in rows:
+        day = (r.get('approved_at') or r.get('created_at') or '')[:10]
+        y, w, _ = datetime.date.fromisoformat(day).isocalendar() if day else (None, None, None)
+        if weeks and day and (datetime.date.today() - datetime.date.fromisoformat(day)).days > int(weeks) * 7: continue
+        email = (r.get('user_email') or '').strip().lower()
+        x = (r.get('twitter_username') or '').strip().rstrip('/').split('/')[-1].split('?')[0].lstrip('@')
+        out.append({'list': 'launches', 'source': 'engine:marketingdb', 'ref': u, 'name': r.get('project_name'),
+                    'website': r.get('project_url'), 'tagline': (r.get('tagline') or r.get('description') or '')[:300],
+                    'topics': [t for t in [r.get('category')] + (r.get('tags') or []) if t],
+                    'people': [{'name': '', 'x': f'https://x.com/{x}'}] if x else [],
+                    'emails': [email] if '@' in email else [], '_owner_email': True,
+                    'signals': {'mdb_category': r.get('category'), 'mdb_week': f'{y}-W{w:02d}' if w else None,
+                                'mdb_upvotes': r.get('upvotes'), 'mdb_views': r.get('views'), 'mdb_plan': r.get('launch_plan'),
+                                'pricing': r.get('pricing'), 'x': x or None},
+                    'launch_date': day or None})
+    print(f"  marketingdb: {len(rows)} parsed, {sum(1 for o in out if o['emails'])} with a submitter email")
+    return out
+
+
 SOURCES = {'producthunt': producthunt, 'launches': launches, 'revenue': revenue, 'funded': funded,
            'chrome': chrome_sitemap, 'shopify': shopify_sitemap,   # the old Apify keyword searches stay callable below
            'chrome-search': chrome, 'shopify-search': shopify,
            'chrome-store': chrome_sitemap, 'shopify-store': shopify_sitemap,
-           'showhn': showhn, 'stores': stores, 'hiring': hiring, 'firefox': firefox, 'play': play}
+           'showhn': showhn, 'marketingdb': marketingdb, 'stores': stores, 'hiring': hiring, 'firefox': firefox, 'play': play}

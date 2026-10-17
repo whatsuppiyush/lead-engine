@@ -5,7 +5,7 @@ on:
   workflow_dispatch:                
     inputs:
       task:
-        description: "daily | producthunt | launches | revenue | funded | chrome | shopify | retag | push | selftest | verify | report | backfill"
+        description: "daily | producthunt | launches | revenue | funded | chrome | shopify | marketingdb | retag | push | selftest | verify | report | backfill"
         required: true
         default: daily
       limit:
@@ -44,6 +44,7 @@ jobs:
       GUMLOOP_USER_ID: ${{ secrets.GUMLOOP_USER_ID }}
       GUMLOOP_AGENT_ID: ${{ secrets.GUMLOOP_AGENT_ID }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OUTSCRAPER_API_KEY: ${{ secrets.OUTSCRAPER_API_KEY }}
       PY: python
       PYTHONUNBUFFERED: "1"
     steps:

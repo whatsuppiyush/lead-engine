@@ -53,7 +53,24 @@ def process(list_, items, run_id, dry=False):
         payload = {k: v for k, v in it.items() if not k.startswith('_') and k not in ('people',)} | {'people': it.get('people')}
         if state.get(d) in ('has_contact', 'looked_recently'):
             save_company(base, run_id); core.note_appearance(d, it['source'], it['ref'], payload, run_id)
-            st['reused_free'] += 1; continue
+            st['reused_free'] += 1
+            # a listing that names its submitter is a person we may not hold yet, even when the company is known
+            owners = [e.lower() for e in it.get('emails') or []] if it.get('_owner_email') else []
+            have = {r['email'] for r in DB.execute('select email from leads where email = any(%s)', (owners,)).fetchall()} if owners else set()
+            for e in [e for e in owners if e not in have]:
+                res = ver.check(e.split('@')[1], [e], stop_at_first=False)[0]
+                if res.get(e) == 'invalid': continue
+                st_ = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
+                x = next((p.get('x') for p in it.get('people') or [] if p.get('x')), '') or ''
+                products, why = fit([list_], base['topics'], dr.get(d), base['signals'], d in ph)
+                save_lead({'email': e, 'first_name': None, 'last_name': None, 'company': it.get('name'), 'website': it.get('website'),
+                           'domain': d, 'title': None, 'linkedin': None, 'x': x.rstrip('/').split('/')[-1] or None,
+                           'audience': 'B2B founders', 'status': st_, 'fit': products, 'fit_reason': why,
+                           'contact_type': 'company' if is_role(e) else 'founder', 'origin': 'listed',
+                           'email_type': 'role inbox' if is_role(e) else 'personal', 'launch_date': None, 'tagline': None},
+                          it['source'], it['ref'], payload, run_id)
+                st[f'lead:{st_}'] += 1; st['owner_added_to_known'] += 1
+            continue
         if dr.get(d) is not None and dr[d] >= BIG_DR and list_ in ('producthunt', 'launches', 'chrome', 'shopify'):
             save_company({**base, 'lookup_at': 'now', 'lookup_result': 'skipped_big'}, run_id)
             st['skipped_big'] += 1; continue
@@ -80,7 +97,7 @@ def process(list_, items, run_id, dry=False):
                 contacts.append((p, best, status, 'listed' if best in mine else 'guessed')); used.add(best)
         # addresses the company publishes on its own site, not yet used: people first, then shared inboxes
         # store listings (Chrome, Firefox, Play, Shopify) publish the developer's own address, often on another domain
-        given = [e.lower() for e in it.get('emails') or []] if list_ in OWN_EMAIL_LISTS else []
+        given = [e.lower() for e in it.get('emails') or []] if (list_ in OWN_EMAIL_LISTS or it.get('_owner_email')) else []
         published = [e for e in listed if (e.endswith('@' + d) or e in given) and e not in used]
         published = sorted(published, key=is_role)[:2 if not contacts else 1]
         if published:
@@ -90,7 +107,8 @@ def process(list_, items, run_id, dry=False):
             for e in published:
                 if res.get(e) == 'invalid': continue
                 st_ = 'role' if is_role(e) else (res.get(e) if res.get(e) in ('valid', 'catch_all') else 'unverified')
-                contacts.append(({'name': ''}, e, st_, 'listed'))
+                owner = next((p for p in it.get('people') or [] if p.get('x')), {}) if e in given else {}
+                contacts.append(({'name': '', 'x': owner.get('x')}, e, st_, 'listed'))
         products, why = fit([list_], base['topics'], dr.get(d), base['signals'], d in ph)
         save_company({**base, 'lookup_at': 'now', 'catch_all': ca,
                       'lookup_result': 'found' if contacts else ('catch_all' if ca else 'none')}, run_id)
